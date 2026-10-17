@@ -48,6 +48,7 @@ function ConversationList({ items, loading, error, reload }: { items: Conversati
         <h1>Messages</h1>
         <Link to="/recherche" className="btn btn-sm btn-primary"><Icon name="plus" size={16} /> Nouveau</Link>
       </div>
+      {LOCAL && <Link to="/salon" className="conv-salon"><Icon name="globe" size={16} /> Salon général (tout le monde)</Link>}
       {loading && !items && <Spinner />}
       {error && (
         <div className="stack">

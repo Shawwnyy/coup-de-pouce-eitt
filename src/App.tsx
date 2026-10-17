@@ -12,6 +12,7 @@ import { LOCAL } from './lib/mode'
 import { ContactRequestsPage } from './local/Contacts'
 import { ExchangePage } from './local/Exchange'
 import { ProfilePicker } from './local/ProfilePicker'
+import { RoomPage } from './local/Room'
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from './pages/Auth'
 import { HelpDetailPage, HelpListPage, HelpNewPage } from './pages/Help'
 import Home from './pages/Home'
@@ -44,6 +45,7 @@ const routes: RouteDef[] = [
   { path: '/nouveau-mot-de-passe', element: () => <ResetPasswordPage /> },
   { path: '/demandes', element: () => guarded(<ContactRequestsPage />) },
   { path: '/echanger', element: () => guarded(<ExchangePage />) },
+  { path: '/salon', element: () => (LOCAL ? guarded(<RoomPage />) : <NotFound />) },
   { path: '/regles', element: () => <RulesPage /> },
   { path: '/confidentialite', element: () => <PrivacyPage /> },
   { path: '/apparence', element: () => <AppearancePage /> },

@@ -87,6 +87,13 @@ export default function Home() {
             </strong>
             <span className="muted">Vos conversations privées, avec images et liens.</span>
           </Link>
+          {LOCAL && (
+            <Link to="/salon" className="tile">
+              <Icon name="globe" size={26} />
+              <strong>Salon général</strong>
+              <span className="muted">Discuter avec tout le monde. Public et sans modération : à utiliser avec prudence.</span>
+            </Link>
+          )}
           <Link to="/entraide" className="tile">
             <Icon name="help" size={26} />
             <strong>Demandes d’aide</strong>

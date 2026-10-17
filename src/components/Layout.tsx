@@ -60,6 +60,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <NavLink to="/entraide"><Icon name="help" size={18} /> Entraide<CountBadge n={helpCount} /></NavLink>
           <NavLink to="/recherche"><Icon name="search" size={18} /> Recherche</NavLink>
           <NavLink to="/messages"><Icon name="chat" size={18} /> Messages<CountBadge n={msgCount} /></NavLink>
+          {LOCAL && <NavLink to="/salon"><Icon name="globe" size={18} /> Salon</NavLink>}
           <NavLink to="/regles"><Icon name="book" size={18} /> Règles</NavLink>
           <NavLink to="/parametres"><Icon name="settings" size={18} /> Paramètres</NavLink>
         </nav>
@@ -117,6 +118,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <strong>Coup de Pouce</strong> by EITT — Enseignement Informatique pour Toutes et Tous.
           </p>
           <nav aria-label="Pied de page" className="footer-links">
+            {LOCAL && <Link to="/salon">Salon général</Link>}
             {LOCAL && <Link to="/demandes">Demandes d’ajout</Link>}
             {LOCAL && <Link to="/echanger">Autre appareil (code)</Link>}
             <Link to="/regles">Les règles de la communauté</Link>

@@ -13,7 +13,7 @@ import type {
 import { CATEGORIES, LIMITS, RULES_VERSION } from '../lib/config.ts'
 import { sniffType, type Sniffed } from '../lib/files.ts'
 import {
-  DEFAULT_RELAY, cleanPublicKey, decryptText, deriveChannel, encryptText, genKeyPair, mailboxTopic, normalizeRelay, publish, subscribe, verificationCode,
+  DEFAULT_RELAY, ROOM_MAX_CHARS, ROOM_TOPIC, cleanPublicKey, decryptText, deriveChannel, encryptText, genKeyPair, genSignKeyPair, keyFingerprint, mailboxTopic, normalizeRelay, publish, roomSignedText, signRoom, subscribe, verificationCode, verifyRoom,
   type Channel, type KeyPair, type RelayEvent, type RelayStatus,
 } from './online.ts'
 
@@ -30,6 +30,13 @@ interface Person {
   oq?: boolean
   /** Ne pas montrer « est en train d'écrire… » à mes contacts. */
   notyp?: boolean
+  /** A rejoint le salon PUBLIC en ligne. */
+  room?: boolean
+  /** Clés de signature des messages du salon public, et empreinte courte de la clé publique. */
+  sk?: KeyPair
+  fp?: string
+  /** Identités masquées dans le salon (« User#0042|empreinte »). */
+  mute?: string[]
   /** Clés ECDH du profil (créées à la première activation du mode en ligne). */
   keys?: KeyPair
   /** Personne qui m'a écrit en ligne et que je n'ai pas encore acceptée : invisible dans la recherche et les contacts. */
@@ -45,6 +52,8 @@ interface NetReq { id: string; local: string; to_public_id: string; created_at: 
 interface Outbox { id: string; profile: string; topic: string; body: string; msg?: string }
 interface BlockRow { blocker_id: string; blocked_id: string; created_at: string }
 interface HelpRow { id: string; author_id: string; title: string; description: string; category: string; status: HelpStatus; image_path: string | null; urgent?: boolean; created_at: string }
+/** Message du salon général. src « l » = écrit sur cet appareil ; « n » = salon public en ligne (signé, empreinte fp). */
+export interface RoomMsg { id: string; t: string; n: string; d: string | null; fp: string; src: 'l' | 'n'; c: string; bad?: boolean; from?: string }
 interface Db {
   v: 1
   seq: number
@@ -66,6 +75,10 @@ interface Db {
   relay: string | null
   /** Dernier message reçu du relais, par profil (secondes). */
   cursor: Record<string, number>
+  /** Salon général : messages (les 300 derniers), première empreinte vue pour chaque numéro, rattrapage par profil. */
+  room: RoomMsg[]
+  roomKeys: Record<string, string>
+  roomCursor: Record<string, number>
 }
 
 export interface OutgoingFile { blob: File; type: Sniffed }
@@ -75,7 +88,7 @@ const KEY = 'cdp.local.v1'
 const ACTIVE_KEY = 'cdp.local.active'
 const DB_NAME = 'cdp-local-media'
 
-const fresh = (): Db => ({ v: 1, seq: 1, last: null, retired: [], people: {}, convs: [], messages: [], blocks: [], requests: [], reports: [], help: [], netreq: [], outbox: [], seenNet: [], relay: null, cursor: {} })
+const fresh = (): Db => ({ v: 1, seq: 1, last: null, retired: [], people: {}, convs: [], messages: [], blocks: [], requests: [], reports: [], help: [], netreq: [], outbox: [], seenNet: [], relay: null, cursor: {}, room: [], roomKeys: {}, roomCursor: {} })
 function fail(code: string): never {
   throw new Error(code)
 }
@@ -102,7 +115,7 @@ function load(): Db {
     if (!raw) return fresh()
     const d = JSON.parse(raw) as Partial<Db>
     if (d && d.v === 1 && d.people && Array.isArray(d.convs) && Array.isArray(d.messages)) {
-      return { ...fresh(), ...d, retired: d.retired ?? [], blocks: d.blocks ?? [], requests: d.requests ?? [], reports: d.reports ?? [], help: d.help ?? [], netreq: d.netreq ?? [], outbox: d.outbox ?? [], seenNet: d.seenNet ?? [], relay: d.relay ?? null, cursor: d.cursor ?? {} } as Db
+      return { ...fresh(), ...d, retired: d.retired ?? [], blocks: d.blocks ?? [], requests: d.requests ?? [], reports: d.reports ?? [], help: d.help ?? [], netreq: d.netreq ?? [], outbox: d.outbox ?? [], seenNet: d.seenNet ?? [], relay: d.relay ?? null, cursor: d.cursor ?? {}, room: d.room ?? [], roomKeys: d.roomKeys ?? {}, roomCursor: d.roomCursor ?? {} } as Db
     }
   } catch {
     /* données illisibles : on repart de zéro sans planter */
@@ -321,6 +334,7 @@ if (typeof window !== 'undefined') {
       emitAuth()
     }
     db.messages.filter((m) => !known.has(m.id)).forEach(emitMessage)
+    emitRoom()
     void syncOnline()
   })
 }
@@ -961,6 +975,8 @@ export async function deleteAccount(uid: string): Promise<void> {
   db.netreq = db.netreq.filter((x) => x.local !== uid && x.person !== uid)
   db.outbox = db.outbox.filter((o) => o.profile !== uid)
   delete db.cursor[uid]
+  delete db.roomCursor[uid]
+  db.room = db.room.filter((m) => m.from !== uid)
   db.reports = db.reports.filter((r) => r.reporter?.public_id !== db.people[uid].profile.public_id)
   if (!db.people[uid].remote) db.retired.push(db.people[uid].n)
   delete db.people[uid]
@@ -1324,6 +1340,7 @@ export async function setOnline(enabled: boolean): Promise<void> {
 }
 
 function stopOnlineNow(): void {
+  stopRoomSub()
   stopSub?.()
   stopSub = null
   subKey = ''
@@ -1349,6 +1366,7 @@ async function syncOnline(): Promise<void> {
   const topics = await wantedTopics(id)
   if (seq !== syncSeq) return
   const relay = getRelay()
+  syncRoomSub(id, Boolean(p.room), relay)
   const key = [id, relay, ...topics].join('|')
   if (key === subKey && stopSub) return
   stopSub?.()
@@ -1724,6 +1742,176 @@ async function onNetDelete(profileId: string, topic: string, m: NetMsg): Promise
   await delMedia('chat-media', gone.message_attachments.map((a) => a.storage_path))
   emitChange({ kind: 'delete', id: gone.id, conversation_id: gone.conversation_id })
   return true
+}
+
+// ================================================================ Salon général
+// Un salon pour TOUS les profils. Sur cet appareil : tous les profils du navigateur y écrivent (src « l »).
+// En ligne : salon PUBLIC via le relais (src « n »), messages signés (ECDSA) avec empreinte visible. Aucune modération, aucun contrôle d'identité.
+const ROOM_KEEP = 300
+const roomListeners = new Set<() => void>()
+function emitRoom(): void {
+  roomListeners.forEach((cb) => cb())
+}
+export function subscribeRoom(cb: () => void): () => void {
+  roomListeners.add(cb)
+  return () => void roomListeners.delete(cb)
+}
+
+let roomSub: (() => void) | null = null
+let roomSubKey = ''
+let roomChain: Promise<void> = Promise.resolve()
+function stopRoomSub(): void {
+  roomSub?.()
+  roomSub = null
+  roomSubKey = ''
+}
+/** Ouvre ou ferme le flux du salon (séparé du flux des conversations : il a son propre rattrapage). */
+function syncRoomSub(id: string, wanted: boolean, relay: string): void {
+  const key = wanted ? `${id}|${relay}` : ''
+  if (key === roomSubKey && (roomSub || !wanted)) return
+  stopRoomSub()
+  if (!wanted) return
+  roomSubKey = key
+  const cur = db.roomCursor[id]
+  roomSub = subscribe({
+    relay,
+    topics: [ROOM_TOPIC],
+    since: cur ? Math.max(0, cur - 30) : 'all',
+    onStatus: () => undefined,
+    onEvent: (ev) => {
+      if (roomSubKey !== key) return
+      roomChain = roomChain.then(() => handleRoomEvent(id, ev)).catch(() => undefined)
+    },
+  })
+}
+
+const cleanRoomText = (t: string): string => t.replace(/[\u0000-\u001f\u007f\u200b-\u200f\u2028-\u202e]+/g, ' ').replace(/ {2,}/g, ' ').trim()
+
+async function handleRoomEvent(profileId: string, ev: RelayEvent): Promise<void> {
+  syncFromStorage()
+  const p = db.people[profileId]
+  if (!p || !p.room || !p.online || activeId !== profileId) return
+  if ((db.roomCursor[profileId] ?? 0) < ev.time) db.roomCursor[profileId] = ev.time
+  let m: { cdp?: unknown; t?: unknown; mid?: unknown; n?: unknown; d?: unknown; ts?: unknown; c?: unknown; k?: unknown; s?: unknown }
+  try {
+    m = JSON.parse(ev.message)
+  } catch {
+    return
+  }
+  if (!m || typeof m !== 'object' || m.cdp !== 1 || m.t !== 'room') return
+  if (typeof m.mid !== 'string' || !SAFE_ID.test(m.mid) || typeof m.n !== 'string' || !PUBLIC_ID.test(m.n)) return
+  if (typeof m.d !== 'string' || m.d.length > 40 || typeof m.ts !== 'string' || typeof m.c !== 'string' || m.c.length > ROOM_MAX_CHARS || typeof m.s !== 'string') return
+  const pk = cleanPublicKey(m.k)
+  if (!pk) return
+  if (db.room.some((x) => x.id === m.mid)) return
+  const text = roomSignedText({ mid: m.mid, n: m.n, d: m.d, ts: m.ts, c: m.c })
+  if (!(await verifyRoom(pk, text, m.s))) return // pas signé par la clé annoncée : rejeté
+  const claimed = Date.parse(m.ts)
+  if (Number.isNaN(claimed) || Math.abs(ev.time * 1000 - claimed) > 6 * 3600 * 1000) return // vieux message rejoué ou horloge folle
+  const content = cleanRoomText(m.c)
+  if (!content) return
+  const fp = await keyFingerprint(pk)
+  syncFromStorage()
+  if (db.room.some((x) => x.id === m.mid)) return
+  const known = db.roomKeys[m.n as string]
+  let bad = false
+  if (!known) db.roomKeys[m.n as string] = fp
+  else if (known !== fp) bad = true // même numéro, autre clé : autre personne, ou usurpation
+  db.room.push({ id: m.mid as string, t: new Date(ev.time * 1000).toISOString(), n: m.n as string, d: cleanRoomText(m.d as string) || null, fp, src: 'n', c: content, ...(bad ? { bad: true } : {}) })
+  db.room.sort((a, b) => a.t.localeCompare(b.t))
+  if (db.room.length > ROOM_KEEP) db.room.splice(0, db.room.length - ROOM_KEEP)
+  save()
+  emitRoom()
+}
+
+export interface RoomView extends RoomMsg { mine: boolean }
+export interface RoomInfo { joined: boolean; online: boolean; status: RelayStatus; fp: string | null; relay: string; muted: { key: string; n: string; d: string | null }[]; maxChars: number }
+
+export function getRoomInfo(): RoomInfo {
+  const p = activeId ? db.people[activeId] : undefined
+  const muted = (p?.mute ?? []).map((key) => {
+    const last = [...db.room].reverse().find((m) => `${m.n}|${m.fp}` === key)
+    return { key, n: key.split('|')[0], d: last?.d ?? null }
+  })
+  return { joined: Boolean(p?.room && p.online), online: Boolean(p?.online), status: p?.online ? relayStatus : 'off', fp: p?.fp ?? null, relay: getRelay(), muted, maxChars: ROOM_MAX_CHARS }
+}
+
+/** Messages visibles pour le profil actif : ceux de cet appareil, plus ceux du salon public s'il l'a rejoint ; sans les identités masquées. */
+export function listRoom(): RoomView[] {
+  const p = activeId ? db.people[activeId] : undefined
+  if (!p || p.remote) return []
+  const muted = new Set(p.mute ?? [])
+  const online = Boolean(p.room && p.online)
+  return db.room
+    .filter((m) => (m.src === 'l' || online) && !muted.has(`${m.n}|${m.fp}`))
+    .slice(-200)
+    .map((m) => ({ ...m, mine: m.src === 'l' ? m.from === p.profile.id : Boolean(p.fp) && m.fp === p.fp && m.n === p.profile.public_id }))
+}
+
+/** Rejoint (ou quitte) le salon PUBLIC en ligne. Il faut être en ligne ; les clés de signature sont créées la première fois. */
+export async function joinRoom(on: boolean): Promise<void> {
+  const p = me()
+  if (!rulesOk(p)) fail('rules_required')
+  if (on && !p.online) fail('online_off')
+  if (on && !p.sk) {
+    p.sk = await genSignKeyPair()
+    p.fp = await keyFingerprint(p.sk.pub)
+  }
+  p.room = on ? true : undefined
+  save()
+  emitRoom()
+  await syncOnline()
+}
+
+const roomSentAt = new Map<string, number>()
+/** Écrit dans le salon : en ligne (public, signé) si le profil l'a rejoint, sinon sur cet appareil seulement. Jamais mis en file d'attente. */
+export async function sendRoom(text: string): Promise<void> {
+  const my = me()
+  if (!rulesOk(my)) fail('rules_required')
+  const content = cleanRoomText(text)
+  if (!content) fail('empty_message')
+  if (content.length > ROOM_MAX_CHARS) fail('message_too_long')
+  const now = Date.now()
+  if (now - (roomSentAt.get(my.profile.id) ?? 0) < 2000) fail('rate_limited')
+  const name = (my.profile.display_name ?? '').slice(0, 40)
+  const id = newId()
+  if (my.room && my.online) {
+    if (!my.sk) {
+      my.sk = await genSignKeyPair()
+      my.fp = await keyFingerprint(my.sk.pub)
+      save()
+    }
+    const ts = nowIso()
+    const fields = { mid: id, n: my.profile.public_id, d: name, ts, c: content }
+    const s = await signRoom(my.sk.priv, roomSignedText(fields))
+    const k = { kty: my.sk.pub.kty, crv: my.sk.pub.crv, x: my.sk.pub.x, y: my.sk.pub.y }
+    await publish(getRelay(), ROOM_TOPIC, JSON.stringify({ cdp: 1, t: 'room', ...fields, k, s })) // erreur claire si le relais est injoignable : rien n'est « envoyé » en silence
+    roomSentAt.set(my.profile.id, now)
+    syncFromStorage()
+    if (!db.room.some((x) => x.id === id)) db.room.push({ id, t: ts, n: my.profile.public_id, d: name || null, fp: my.fp as string, src: 'n', c: content })
+  } else {
+    roomSentAt.set(my.profile.id, now)
+    db.room.push({ id, t: nextTs(), n: my.profile.public_id, d: name || null, fp: '', src: 'l', c: content, from: my.profile.id })
+  }
+  db.room.sort((a, b) => a.t.localeCompare(b.t))
+  if (db.room.length > ROOM_KEEP) db.room.splice(0, db.room.length - ROOM_KEEP)
+  save()
+  emitRoom()
+}
+
+export function muteRoomUser(key: string): void {
+  const p = me()
+  if (key === `${p.profile.public_id}|${p.fp ?? ''}` || key === `${p.profile.public_id}|`) fail('contact_unavailable')
+  p.mute = [...new Set([...(p.mute ?? []), key])].slice(-200)
+  save()
+  emitRoom()
+}
+
+export function unmuteRoomUser(key: string): void {
+  const p = me()
+  p.mute = (p.mute ?? []).filter((k) => k !== key)
+  save()
+  emitRoom()
 }
 
 // ---- Informations pour l'interface

@@ -59,3 +59,21 @@ test('clé publique reçue : seuls les champs attendus sont gardés', async () =
   assert.equal(cleanPublicKey({ kty: 'EC', crv: 'P-256', x: 'court', y: 'court' }), null)
   await assert.rejects(() => deriveChannel(k.priv, { kty: 'EC', crv: 'P-256', x: 'a'.repeat(43), y: 'a'.repeat(43) }, 'id-a-000001', 'id-b-000002'))
 })
+
+test('salon : signature valide, texte modifié ou autre clé refusés, empreinte stable', async () => {
+  const { genSignKeyPair, signRoom, verifyRoom, roomSignedText, keyFingerprint } = await import('./online.ts')
+  const k = await genSignKeyPair()
+  const m = { mid: 'abcdefgh12345', n: 'User#0042', d: 'Léo', ts: '2026-10-17T20:00:00.000Z', c: 'Bonjour à toutes et à tous' }
+  const sig = await signRoom(k.priv, roomSignedText(m))
+  assert.equal(await verifyRoom(k.pub, roomSignedText(m), sig), true)
+  assert.equal(await verifyRoom(k.pub, roomSignedText({ ...m, c: 'Bonjour à toutes et à tous !' }), sig), false)
+  assert.equal(await verifyRoom(k.pub, roomSignedText({ ...m, n: 'User#0043' }), sig), false)
+  const other = await genSignKeyPair()
+  assert.equal(await verifyRoom(other.pub, roomSignedText(m), sig), false)
+  assert.equal(await verifyRoom(k.pub, roomSignedText(m), 'pas-une-signature'), false)
+  assert.equal(await verifyRoom({ kty: 'RSA' } as JsonWebKey, roomSignedText(m), sig), false)
+  const fp = await keyFingerprint(k.pub)
+  assert.match(fp, /^[0-9a-f]{6}$/)
+  assert.equal(fp, await keyFingerprint({ ...k.pub, d: 'ignoré' } as JsonWebKey))
+  assert.notEqual(fp, await keyFingerprint(other.pub))
+})

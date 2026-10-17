@@ -223,3 +223,45 @@ export function subscribe(o: SubscribeOptions): () => void {
     ctrl?.abort()
   }
 }
+
+// ---------------------------------------------------------------- Salon public : signatures et empreintes
+/** Sujet du salon général : public par construction (n'importe qui peut y lire et y écrire). */
+export const ROOM_TOPIC = 'cdp1-room-general'
+export const ROOM_MAX_CHARS = 300
+
+const SIGN = { name: 'ECDSA', namedCurve: 'P-256' } as const
+
+/** Clés de signature d'un profil (distinctes des clés de chiffrement des conversations). */
+export async function genSignKeyPair(): Promise<KeyPair> {
+  const k = await crypto.subtle.generateKey(SIGN, true, ['sign', 'verify'])
+  return { pub: await crypto.subtle.exportKey('jwk', k.publicKey), priv: await crypto.subtle.exportKey('jwk', k.privateKey) }
+}
+
+/** Texte exact qui est signé : tout changement d'un champ invalide la signature. */
+export function roomSignedText(m: { mid: string; n: string; d: string; ts: string; c: string }): string {
+  return ['cdp1-room', 'general', m.mid, m.n, m.d, m.ts, m.c].join('\n')
+}
+
+export async function signRoom(priv: JsonWebKey, text: string): Promise<string> {
+  const key = await crypto.subtle.importKey('jwk', { kty: priv.kty, crv: priv.crv, x: priv.x, y: priv.y, d: priv.d }, SIGN, false, ['sign'])
+  return toB64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(text)))
+}
+
+export async function verifyRoom(pub: JsonWebKey, text: string, sigB64: string): Promise<boolean> {
+  const clean = cleanPublicKey(pub)
+  if (!clean || !/^[A-Za-z0-9+/=]{80,100}$/.test(sigB64)) return false
+  try {
+    const key = await crypto.subtle.importKey('jwk', clean, SIGN, false, ['verify'])
+    return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, fromB64(sigB64), enc.encode(text))
+  } catch {
+    return false
+  }
+}
+
+/** Empreinte courte d'une clé publique (6 caractères) : deux personnes différentes ont (presque) toujours deux empreintes différentes. */
+export async function keyFingerprint(pub: JsonWebKey): Promise<string> {
+  const clean = cleanPublicKey(pub)
+  if (!clean) return ''
+  const d = await crypto.subtle.digest('SHA-256', enc.encode(`cdp1|fp|${clean.x}|${clean.y}`))
+  return toHex(d).slice(0, 6)
+}
