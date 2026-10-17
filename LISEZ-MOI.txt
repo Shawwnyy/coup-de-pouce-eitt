@@ -1,0 +1,15 @@
+COUP DE POUCE BY EITT
+
+>>> DOUBLE-CLIQUEZ SUR :  Coup-de-Pouce.html  <<<
+
+- Pas d'inscription, pas de mot de passe, rien à installer.
+- Cliquez sur "Commencer" : le profil User#0001 est gardé dans votre navigateur.
+- Vous pouvez en créer d'autres, changer le nom, supprimer un profil.
+- Images, GIF, vidéos et liens fonctionnent (gardés dans ce navigateur).
+
+Important : tout reste sur CET ordinateur, dans CE navigateur. Ce n'est pas un chat entre
+plusieurs appareils. Les conversations se font entre les profils créés ici
+(ouvrez 2 onglets, un par profil).
+
+Ne double-cliquez PAS sur index.html (c'est le fichier source : page blanche).
+Le détail complet est dans README.md (section 00).
