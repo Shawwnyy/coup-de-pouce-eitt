@@ -14,6 +14,7 @@ import { friendlyError } from '../lib/errors'
 import { previewUrl, validateFile } from '../lib/files'
 import { dayKey, displayName, formatBytes, formatDateTime, formatDayLabel, formatShort, formatTime } from '../lib/format'
 import { useAsync, useCopy, useDocumentTitle } from '../lib/hooks'
+import { LOCAL } from '../lib/mode'
 import { CHAT_POLICY } from '../lib/policies'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from '../lib/router'
 import type { ConversationSummary, Message } from '../types'
@@ -54,7 +55,7 @@ function ConversationList({ items, loading, error, reload }: { items: Conversati
       )}
       {items && items.length === 0 && (
         <EmptyState icon="chat" title="Aucune conversation" action={<Link to="/recherche" className="btn btn-primary btn-sm">Rechercher un utilisateur</Link>}>
-          Retrouvez quelqu’un grâce à son identifiant (par exemple User#0001) pour lui écrire.
+          {LOCAL ? 'Retrouvez quelqu’un par son nom ou son identifiant pour lui écrire (après acceptation de votre demande d’ajout).' : 'Retrouvez quelqu’un grâce à son identifiant (par exemple User#0001) pour lui écrire.'}
         </EmptyState>
       )}
       <ul className="conv-items">
@@ -548,7 +549,7 @@ export default function MessagesPage() {
         ) : (
           <div className="thread thread-empty">
             <EmptyState icon="chat" title="Choisissez une conversation">
-              Sélectionnez une conversation dans la liste, ou retrouvez quelqu’un grâce à son identifiant public pour lui écrire.
+              Sélectionnez une conversation dans la liste, ou retrouvez quelqu’un grâce à son {LOCAL ? 'nom ou son identifiant' : 'identifiant public'} pour lui écrire.
             </EmptyState>
           </div>
         )}

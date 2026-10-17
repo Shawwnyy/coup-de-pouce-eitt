@@ -3,6 +3,8 @@ import { ConfirmDialog, ReportDialog } from '../components/Dialogs'
 import { useContact } from '../components/UserCard'
 import { Alert, Avatar, EmptyState, Icon, PageLoading } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
+import { LOCAL } from '../lib/mode'
+import { ShareCodeCard } from '../local/Exchange'
 import * as api from '../lib/api'
 import { friendlyError } from '../lib/errors'
 import { displayName, formatDate } from '../lib/format'
@@ -70,6 +72,7 @@ function ProfileView({ profile, isMe }: { profile: Profile; isMe: boolean }) {
             </>
           )}
         </div>
+        {isMe && LOCAL && <ShareCodeCard onProfile />}
         {isMe && <p className="hint">Partagez votre identifiant pour que l’on puisse vous retrouver : votre adresse e-mail reste privée.</p>}
         {blocked.data && <Alert kind="warn">Vous avez bloqué cette personne : elle ne peut plus vous écrire et vous ne pouvez plus lui écrire.</Alert>}
         {error && <Alert kind="error">{error}</Alert>}

@@ -47,6 +47,31 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** Bloc « Mon code de partage » (page Échanger et page Profil). Le code ne contient ni mot de passe ni message. */
+export function ShareCodeCard({ onProfile = false }: { onProfile?: boolean }) {
+  const { profile } = useAuth()
+  const [copyNote, setCopyNote] = useState<string | null>(null)
+  if (!profile) return null
+  const myCode = makeShareCode()
+  return (
+    <section className={onProfile ? 'share-card stack' : 'card stack'} aria-labelledby={onProfile ? 'pf-code' : 'ex-1'}>
+      <h2 id={onProfile ? 'pf-code' : 'ex-1'}>{onProfile ? 'Mon code de partage' : '1. Mon code de partage'}</h2>
+      <p>
+        Donnez ce code à une personne qui utilise Coup de Pouce sur un autre appareil : elle pourra vous retrouver par votre nom ou votre numéro {profile.public_id}.
+        Il ne contient pas de mot de passe ni de message.
+      </p>
+      <textarea className="input mono" readOnly rows={3} value={myCode} aria-label="Mon code de partage" onFocus={(e) => e.currentTarget.select()} />
+      <div className="row">
+        <button type="button" className="btn btn-primary" onClick={async () => setCopyNote((await copyText(myCode)) ? 'Code copié.' : 'Copie impossible : sélectionnez le code et copiez-le.')}>
+          <Icon name="copy" size={18} /> Copier mon code
+        </button>
+        {onProfile && <Link to="/echanger" className="btn">Ajouter quelqu’un / échanger des messages</Link>}
+        {copyNote && <span className="hint" role="status">{copyNote}</span>}
+      </div>
+    </section>
+  )
+}
+
 export function ExchangePage() {
   useDocumentTitle('Échanger avec un autre appareil')
   const { profile } = useAuth()
@@ -54,13 +79,11 @@ export function ExchangePage() {
   const refresh = () => setTick((t) => t + 1)
   const [code, setCode] = useState('')
   const [addNote, setAddNote] = useState<Note>(null)
-  const [copyNote, setCopyNote] = useState<string | null>(null)
   const [sendNote, setSendNote] = useState<Note>(null)
   const [recvNote, setRecvNote] = useState<Note>(null)
   const [busy, setBusy] = useState(false)
   const file = useRef<HTMLInputElement>(null)
   const contacts = listContacts()
-  const myCode = makeShareCode()
 
   function add() {
     try {
@@ -118,17 +141,7 @@ export function ExchangePage() {
         retrouver par nom ou numéro), puis des fichiers de messages envoyés par vos propres moyens. Ce n’est ni instantané ni automatique.
       </Alert>
 
-      <section className="card stack" aria-labelledby="ex-1">
-        <h2 id="ex-1">1. Mon code de partage</h2>
-        <p>Donnez ce code à la personne (message, e-mail…). Il contient seulement votre numéro {profile?.public_id} et votre nom affiché : pas de mot de passe, pas de messages.</p>
-        <textarea className="input mono" readOnly rows={3} value={myCode} aria-label="Mon code de partage" onFocus={(e) => e.currentTarget.select()} />
-        <div className="row">
-          <button type="button" className="btn" onClick={async () => setCopyNote((await copyText(myCode)) ? 'Code copié.' : 'Copie impossible : sélectionnez le code et copiez-le.')}>
-            <Icon name="copy" size={18} /> Copier mon code
-          </button>
-          {copyNote && <span className="hint" role="status">{copyNote}</span>}
-        </div>
-      </section>
+      <ShareCodeCard />
 
       <section className="card stack" aria-labelledby="ex-2">
         <h2 id="ex-2">2. Ajouter quelqu’un avec son code</h2>

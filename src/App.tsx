@@ -6,6 +6,7 @@ import { EmptyState } from './components/ui'
 import { AuthProvider } from './context/AuthContext'
 import { NotifyProvider } from './context/NotifyContext'
 import { ThemeProvider } from './context/ThemeContext'
+import { useDocumentTitle } from './lib/hooks'
 import { Link, Router, Routes, type RouteDef } from './lib/router'
 import { LOCAL } from './lib/mode'
 import { ContactRequestsPage } from './local/Contacts'
@@ -21,6 +22,17 @@ import ProfilePage from './pages/Profile'
 import RulesPage from './pages/Rules'
 import SearchPage from './pages/Search'
 import SettingsPage, { AppearancePage } from './pages/Settings'
+
+function NotFound() {
+  useDocumentTitle('Page introuvable')
+  return (
+    <div className="page narrow">
+      <EmptyState icon="search" title="Page introuvable" action={<Link to="/" className="btn btn-primary">Retour à l’accueil</Link>}>
+        Cette page n’existe pas ou a été déplacée.
+      </EmptyState>
+    </div>
+  )
+}
 
 const guarded = (el: ReactNode) => <RequireAuth>{el}</RequireAuth>
 
@@ -43,16 +55,7 @@ const routes: RouteDef[] = [
   { path: '/moderation', element: () => guarded(<ModerationPage />) },
   { path: '/profil/:id?', element: () => guarded(<ProfilePage />) },
   { path: '/parametres/:section?', element: () => guarded(<SettingsPage />) },
-  {
-    path: '*',
-    element: () => (
-      <div className="page narrow">
-        <EmptyState icon="search" title="Page introuvable" action={<Link to="/" className="btn btn-primary">Retour à l’accueil</Link>}>
-          Cette page n’existe pas ou a été déplacée.
-        </EmptyState>
-      </div>
-    ),
-  },
+  { path: '*', element: () => <NotFound /> },
 ]
 
 export default function App() {

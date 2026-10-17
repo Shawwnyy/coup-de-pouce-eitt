@@ -45,7 +45,7 @@ export default function SearchPage() {
       <header className="page-head">
         <h1>Rechercher un utilisateur</h1>
         {LOCAL ? (
-          <p className="muted">Saisissez le nom de la personne ou son identifiant, par exemple <span className="mono accent">Léo.G</span> ou <span className="mono accent">User#4827</span>. Seuls les profils créés sur cet appareil sont trouvés.</p>
+          <p className="muted">Saisissez le nom de la personne ou son identifiant, par exemple <span className="mono accent">Léo.G</span> ou <span className="mono accent">User#4827</span>. Sont trouvés : les profils créés sur cet appareil et ceux ajoutés avec un code de partage.</p>
         ) : (
           <p className="muted">Saisissez l’identifiant public complet de la personne, par exemple <span className="mono accent">User#0001</span>. Aucune adresse e-mail n’est jamais affichée.</p>
         )}
@@ -78,7 +78,7 @@ export default function SearchPage() {
             {LOCAL && !FORMAT.test(q) ? 'Aucun profil de cet appareil ne porte ce nom (ou la personne ne souhaite pas être retrouvée). Essayez un autre morceau du nom ou son identifiant User#.' : FORMAT.test(q) ? 'Cette personne n’existe pas ou ne souhaite pas être retrouvée par la recherche.' : 'Le format attendu est « User# » suivi du numéro, par exemple User#0001.'}
           </EmptyState>
         )}
-        {!q && !loading && <p className="hint">Les résultats s’afficheront ici. {LOCAL ? 'Tapez un nom (ou un morceau de nom) ou un identifiant : seuls les profils de cet appareil existent ici.' : 'La recherche est volontairement limitée à l’identifiant exact pour protéger la vie privée de chacun.'}</p>}
+        {!q && !loading && <p className="hint">Les résultats s’afficheront ici. {LOCAL ? 'Un morceau de nom suffit.' : 'La recherche est volontairement limitée à l’identifiant exact pour protéger la vie privée de chacun.'}</p>}
       </div>
     </div>
   )

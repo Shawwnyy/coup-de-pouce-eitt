@@ -2057,7 +2057,7 @@ mark.todo {
 
 /* Version locale (sans compte) */
 .local-banner {
-  display: flex; align-items: center; gap: 8px; justify-content: center; text-align: center;
+  display: flex; align-items: flex-start; gap: 8px; justify-content: center; text-align: left;
   padding: 8px 16px; font-size: 0.875rem; background: var(--surface-2, rgba(0, 180, 255, 0.12)); color: var(--text);
   border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.3));
 }
@@ -2115,3 +2115,15 @@ mark.todo {
 .btn-accept:hover { background: #05603a; }
 .chip-ok { background: #067647; color: #fff; border-color: #12b76a; }
 @media (max-width: 700px) { .cr-popups { top: 4rem; right: 0.5rem; left: 0.5rem; width: auto; } }
+
+/* Bloc « Mon code de partage » dans le profil */
+.share-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+.share-card h2 { margin: 0; font-size: 1.1rem; }
+.share-card textarea { width: 100%; word-break: break-all; }
+.local-banner > svg { flex: none; margin-top: 3px; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }

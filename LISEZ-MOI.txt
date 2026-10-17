@@ -10,6 +10,7 @@ COUP DE POUCE BY EITT
 
 Quelqu'un utilise l'appli sur un autre appareil ? Sans serveur on ne le voit pas tout seul :
 menu en bas de page "Autre appareil (code)" -> on s'echange un code, puis des fichiers de messages.
+Votre code de partage (CDP1...) est aussi affiche dans votre profil, avec un bouton "Copier mon code".
 
 Important : tout reste sur CET ordinateur, dans CE navigateur. Ce n'est pas un chat entre
 plusieurs appareils. Les conversations se font entre les profils créés ici

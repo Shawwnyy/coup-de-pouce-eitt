@@ -96,7 +96,8 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {LOCAL && (
         <div className="local-banner" role="note">
-          <Icon name="info" size={16} /> Version locale : tout est gardé dans ce navigateur. Pas de chat automatique entre appareils (échange par code et fichier) ni de modération.
+          <Icon name="info" size={16} />
+          <span>Version locale : tout est gardé dans ce navigateur. Pas de chat automatique entre appareils (échange par code et fichier) ni de modération.</span>
         </div>
       )}
       {LOCAL && authed && <RedAlertBanner />}

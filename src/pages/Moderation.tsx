@@ -6,6 +6,7 @@ import { REPORT_REASONS, REPORT_STATUS_LABEL } from '../lib/config'
 import { friendlyError } from '../lib/errors'
 import { formatDateTime } from '../lib/format'
 import { useAsync, useDocumentTitle } from '../lib/hooks'
+import { LOCAL } from '../lib/mode'
 import { Link } from '../lib/router'
 import type { ReportRow, ReportStatus } from '../types'
 
@@ -82,7 +83,9 @@ export default function ModerationPage() {
     return (
       <div className="page narrow">
         <EmptyState icon="shield" title="Accès réservé" action={<Link to="/" className="btn btn-primary">Retour à l’accueil</Link>}>
-          Cet écran est réservé aux personnes désignées pour la modération. Pour signaler un problème, utilisez le bouton « Signaler » sur un message, un profil ou une demande.
+          {LOCAL
+            ? 'La modération n’existe pas dans la version locale : il n’y a personne pour traiter les signalements. Les signalements restent enregistrés sur cet appareil. En cas de danger, contactez le 112.'
+            : 'Cet écran est réservé aux personnes désignées pour la modération. Pour signaler un problème, utilisez le bouton « Signaler » sur un message, un profil ou une demande.'}
         </EmptyState>
       </div>
     )
