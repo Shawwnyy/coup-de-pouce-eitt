@@ -6,7 +6,7 @@
  *
  * Nécessite esbuild (npm install suffit : il est installé avec Vite). Variable ESBUILD_PATH / EXTRA_NODE_MODULES facultatives.
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
@@ -82,4 +82,7 @@ window.addEventListener('error',function(e){var b=document.getElementById('boot'
 `
 const out = resolve(root, 'Coup-de-Pouce.html')
 writeFileSync(out, html)
+// Copie dans public/ : le déploiement GitHub Pages (workflow) publie le dossier dist, qui contient tout public/.
+// Sans cette copie, Coup-de-Pouce.html ne serait plus servi après un déploiement par le workflow.
+if (existsSync(resolve(root, 'public'))) copyFileSync(out, resolve(root, 'public', 'Coup-de-Pouce.html'))
 console.log('OK', out, Math.round(html.length / 1024), 'Ko', existsSync(out) ? '' : '(?)')
