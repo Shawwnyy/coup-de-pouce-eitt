@@ -3,7 +3,7 @@ import { ConfirmDialog } from '../components/Dialogs'
 import { Alert, Icon } from '../components/ui'
 import { friendlyError } from '../lib/errors'
 import { Link } from '../lib/router'
-import { answerOnlinePrompt, onlinePromptDue, conversationLink, conversationVerification, getOnline, messageNet, onlineRequestState, sendOnlineRequest, setOnline, setRelay, subscribeOnlineStatus, type OnlineInfo } from './localApi'
+import { answerOnlinePrompt, getTypingEnabled, onlinePromptDue, setTypingEnabled, conversationLink, conversationVerification, getOnline, messageNet, onlineRequestState, sendOnlineRequest, setOnline, setRelay, subscribeOnlineStatus, type OnlineInfo } from './localApi'
 
 /** État du mode en ligne du profil actif ; se met à jour quand la connexion change et toutes les 2 s (file d'attente). */
 export function useOnline(): OnlineInfo {
@@ -109,6 +109,7 @@ export function OnlineSettingsCard() {
   const { info, ask, dialog } = useOnlineToggle()
   const [url, setUrl] = useState(info.relay)
   const [note, setNote] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+  const [typing, setTyping] = useState(getTypingEnabled)
   return (
     <div className="card stack">
       <h2>Mode en ligne (bêta)</h2>
@@ -122,6 +123,10 @@ export function OnlineSettingsCard() {
           <Icon name={info.enabled ? 'x' : 'globe'} size={18} /> {info.enabled ? 'Repasser hors ligne' : 'Passer en ligne'}
         </button>
       </div>
+      <label className="check">
+        <input id="typing-opt" type="checkbox" checked={typing} onChange={(e) => { setTypingEnabled(e.target.checked); setTyping(e.target.checked) }} />
+        <span>Montrer « est en train d’écrire… » à mes contacts. Décoché : ils ne le voient pas. En ligne, chaque signal est un petit message chiffré (au plus un toutes les 8 s) qui compte dans la limite du relais gratuit.</span>
+      </label>
       <details>
         <summary>Relais utilisé (avancé)</summary>
         <div className="stack">

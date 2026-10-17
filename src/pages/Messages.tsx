@@ -16,6 +16,7 @@ import { dayKey, displayName, formatBytes, formatDateTime, formatDayLabel, forma
 import { useAsync, useCopy, useDocumentTitle } from '../lib/hooks'
 import { LOCAL } from '../lib/mode'
 import { CrossDeviceGuide, NetBadge, OnlineConvNotice } from '../local/OnlineBar'
+import { conversationLink, editMessage, isPeerTyping, sendTyping, subscribeMessageChanges, subscribeTyping } from '../local/localApi'
 import { CHAT_POLICY } from '../lib/policies'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from '../lib/router'
 import type { ConversationSummary, Message } from '../types'
@@ -93,24 +94,92 @@ function CopyItem({ text }: { text: string }) {
   )
 }
 
-function MessageItem({ m, mine, peerName, onReport, onDelete }: { m: Message; mine: boolean; peerName: string; onReport: () => void; onDelete: () => void }) {
+function MessageItem({ m, mine, peerName, onReport, onDelete, onEdit }: { m: Message; mine: boolean; peerName: string; onReport: () => void; onDelete: () => void; onEdit: (m: Message, text: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(m.content)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const canEdit = LOCAL && mine && (m.content !== '' || m.message_attachments.length === 0)
+  async function save() {
+    if (!draft.trim() && m.message_attachments.length === 0) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onEdit(m, draft)
+      setEditing(false)
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <li className={`msg ${mine ? 'mine' : 'theirs'}`}>
       <div className="bubble">
         <span className="sr-only">{mine ? 'Vous' : peerName} :</span>
-        <RichText text={m.content} />
+        {editing ? (
+          <div className="stack msg-edit">
+            <label htmlFor={`edit-${m.id}`} className="sr-only">Modifier le message</label>
+            <textarea
+              id={`edit-${m.id}`}
+              className="input"
+              rows={2}
+              value={draft}
+              autoFocus
+              maxLength={LIMITS.messageChars + 200}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setEditing(false)
+                else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  void save()
+                }
+              }}
+            />
+            {error && <Alert kind="error">{error}</Alert>}
+            <div className="row">
+              <button type="button" className="btn btn-sm btn-primary" disabled={busy || (!draft.trim() && m.message_attachments.length === 0) || draft.length > LIMITS.messageChars} onClick={() => void save()}>{busy ? 'Patientez…' : 'Enregistrer'}</button>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setEditing(false)}>Annuler</button>
+            </div>
+          </div>
+        ) : (
+          <RichText text={m.content} />
+        )}
         {m.message_attachments.map((a) => <MediaAttachment key={a.id} att={a} />)}
         <div className="bubble-meta">
           <time dateTime={m.created_at} title={formatDateTime(m.created_at)}>{formatTime(m.created_at)}</time>
+          {m.edited_at && <span className="edited-mark" title={`Modifié le ${formatDateTime(m.edited_at)}`}>(modifié)</span>}
           {LOCAL && mine && <NetBadge id={m.id} />}
           <Menu label="Actions sur ce message" align={mine ? 'right' : 'left'}>
             {m.content && <CopyItem text={m.content} />}
+            {canEdit && <button type="button" className="menu-item" onClick={() => { setDraft(m.content); setError(null); setEditing(true) }}><Icon name="doc" size={16} /> Modifier</button>}
             {!mine && <button type="button" className="menu-item" onClick={onReport}><Icon name="flag" size={16} /> Signaler ce message</button>}
             {mine && <button type="button" className="menu-item danger" onClick={onDelete}><Icon name="trash" size={16} /> Supprimer</button>}
           </Menu>
         </div>
       </div>
     </li>
+  )
+}
+
+/** « marc est en train d'écrire… » (ne s'affiche que si le contact écrit vraiment, et disparaît tout seul). */
+function TypingIndicator({ conversationId, peerName }: { conversationId: string; peerName: string }) {
+  const [on, setOn] = useState(() => isPeerTyping(conversationId))
+  useEffect(() => {
+    const update = () => setOn(isPeerTyping(conversationId))
+    update()
+    const off = subscribeTyping(update)
+    const t = window.setInterval(update, 1000)
+    return () => {
+      off()
+      window.clearInterval(t)
+    }
+  }, [conversationId])
+  if (!on) return null
+  return (
+    <p className="typing-indicator" role="status">
+      <span className="typing-dots" aria-hidden="true"><i /><i /><i /></span> {peerName} est en train d’écrire…
+    </p>
   )
 }
 
@@ -317,6 +386,25 @@ function Thread({ id }: { id: string }) {
     setPending((l) => l.filter((x) => x.key !== p.key))
   }
 
+  async function saveEdit(m: Message, content: string) {
+    const upd = await editMessage(m.id, content)
+    setMessages((l) => l.map((x) => (x.id === m.id ? { ...x, content: upd.content, edited_at: upd.edited_at } : x)))
+  }
+
+  // Modification ou suppression venue de l'autre personne (en ligne ou autre onglet) : la conversation se met à jour toute seule.
+  useEffect(() => {
+    if (!LOCAL) return undefined
+    return subscribeMessageChanges((ch) => {
+      if (ch.conversation_id !== id) return
+      if (ch.kind === 'delete') {
+        setMessages((l) => l.filter((x) => x.id !== ch.id))
+        knownIds.current.delete(ch.id)
+      } else {
+        void api.fetchMessage(ch.id).then((msg) => msg && setMessages((l) => l.map((x) => (x.id === msg.id ? { ...msg } : x))), () => undefined)
+      }
+    })
+  }, [id])
+
   async function confirmDelete() {
     if (!deleting) return
     setDeleteBusy(true)
@@ -434,7 +522,7 @@ function Thread({ id }: { id: string }) {
             return (
               <Fragment key={m.id}>
                 {sep && <li className="day-sep" aria-hidden="false"><span>{formatDayLabel(m.created_at)}</span></li>}
-                <MessageItem m={m} mine={m.sender_id === userId} peerName={peerName} onReport={() => setReporting({ kind: 'message', id: m.id })} onDelete={() => { setDeleteError(null); setDeleting(m) }} />
+                <MessageItem m={m} mine={m.sender_id === userId} peerName={peerName} onReport={() => setReporting({ kind: 'message', id: m.id })} onDelete={() => { setDeleteError(null); setDeleting(m) }} onEdit={saveEdit} />
               </Fragment>
             )
           })}
@@ -464,6 +552,7 @@ function Thread({ id }: { id: string }) {
         </ul>
       </div>
 
+      {LOCAL && <TypingIndicator conversationId={id} peerName={peerName} />}
       {LOCAL && <OnlineConvNotice conversationId={id} />}
       {blocked.data ? (
         <div className="composer-blocked">
@@ -497,7 +586,10 @@ function Thread({ id }: { id: string }) {
               rows={1}
               placeholder="Écrire un message…"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value)
+                if (LOCAL && e.target.value.trim()) sendTyping(id)
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault()
@@ -521,6 +613,8 @@ function Thread({ id }: { id: string }) {
       {deleting && (
         <ConfirmDialog title="Supprimer ce message ?" confirmLabel="Supprimer" danger busy={deleteBusy} error={deleteError} onConfirm={confirmDelete} onCancel={() => setDeleting(null)}>
           Le message{deleting.message_attachments.length ? ' et son fichier joint seront supprimés' : ' sera supprimé'} pour vous et pour votre interlocuteur. Cette action est définitive.
+          {LOCAL && conversationLink(id).mode === 'file' && ' Ce contact est sur un autre appareil sans lien en ligne : s’il a déjà reçu le message par fichier, il le gardera.'}
+          {LOCAL && conversationLink(id).mode === 'online' && deleting.message_attachments.length > 0 && ' Le fichier joint a été échangé hors ligne : l’autre personne peut l’avoir déjà reçu.'}
         </ConfirmDialog>
       )}
       {confirmBlock && (

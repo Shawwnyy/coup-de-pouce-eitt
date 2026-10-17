@@ -8,6 +8,7 @@ import { OnlineBar, OnlinePrompt } from '../local/OnlineBar'
 import { RedAlertBanner } from '../local/RedAlerts'
 import { Link, NavLink, useNavigate } from '../lib/router'
 import { isConfigured } from '../lib/supabase'
+import { QuotePanel, QuoteRestore, useQuoteHidden } from './QuotePanel'
 import { Avatar, Icon } from './ui'
 
 const BASE = import.meta.env.BASE_URL || '/'
@@ -30,12 +31,13 @@ export function Layout({ children }: { children: ReactNode }) {
   const { status, profile, signOut, isModerator } = useAuth()
   const { unreadMessages, newHelpRequests, prefs, toasts, dismissToast } = useNotify()
   const authed = status === 'authed' && profile
+  const [quoteHidden] = useQuoteHidden()
   const navigate = useNavigate()
   const msgCount = prefs.inapp_indicator ? unreadMessages : 0
   const helpCount = prefs.inapp_indicator ? newHelpRequests : 0
 
   return (
-    <div className="shell">
+    <div className={`shell${quoteHidden ? '' : ' has-quote'}`}>
       <a
         className="skip-link"
         href="#main"
@@ -107,6 +109,8 @@ export function Layout({ children }: { children: ReactNode }) {
       {LOCAL && authed && <ContactPopups />}
       <main id="main" tabIndex={-1}>{children}</main>
 
+      <QuotePanel />
+
       <footer className="footer">
         <div className="footer-inner">
           <p>
@@ -118,6 +122,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <Link to="/regles">Les règles de la communauté</Link>
             <Link to="/confidentialite">Confidentialité</Link>
             <Link to="/apparence">Apparence</Link>
+            <QuoteRestore />
             <a href={EITT_URL} target="_blank" rel="noopener noreferrer">Site d’EITT <Icon name="external" size={14} /></a>
           </nav>
         </div>

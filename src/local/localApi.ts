@@ -28,6 +28,8 @@ interface Person {
   online?: boolean
   /** La question « activer le mode en ligne ? » a déjà été posée à ce profil (on ne la repose pas). */
   oq?: boolean
+  /** Ne pas montrer « est en train d'écrire… » à mes contacts. */
+  notyp?: boolean
   /** Clés ECDH du profil (créées à la première activation du mode en ligne). */
   keys?: KeyPair
   /** Personne qui m'a écrit en ligne et que je n'ai pas encore acceptée : invisible dans la recherche et les contacts. */
@@ -214,16 +216,105 @@ function emitMessage(m: Message): void {
   const c = db.convs.find((x) => x.id === m.conversation_id)
   if (!c || !activeId || (c.a !== activeId && c.b !== activeId)) return
   const evt = { id: m.id, conversation_id: m.conversation_id, sender_id: m.sender_id, created_at: m.created_at }
+  if (m.sender_id !== activeId && typingUntil.delete(m.conversation_id)) typingListeners.forEach((cb) => cb())
   msgListeners.forEach((cb) => cb(evt))
+}
+
+// ---------------------------------------------------------------- Modifications, suppressions et « écrit… » : abonnements
+export interface MessageChange { kind: 'edit' | 'delete'; id: string; conversation_id: string }
+const changeListeners = new Set<(c: MessageChange) => void>()
+const emitChange = (c: MessageChange) => changeListeners.forEach((cb) => cb(c))
+export function subscribeMessageChanges(cb: (c: MessageChange) => void): () => void {
+  changeListeners.add(cb)
+  return () => void changeListeners.delete(cb)
+}
+
+const TYPING_KEY = 'cdp.local.typing'
+const TYPING_SHOWN_MS = 9000
+const typingUntil = new Map<string, number>()
+const typingListeners = new Set<() => void>()
+const typingSentAt = new Map<string, number>()
+function setTyping(convId: string): void {
+  typingUntil.set(convId, Date.now() + TYPING_SHOWN_MS)
+  typingListeners.forEach((cb) => cb())
+}
+export function isPeerTyping(convId: string): boolean {
+  return (typingUntil.get(convId) ?? 0) > Date.now()
+}
+export function subscribeTyping(cb: () => void): () => void {
+  typingListeners.add(cb)
+  return () => void typingListeners.delete(cb)
+}
+function onTypingFromStorage(raw: string): void {
+  try {
+    const d = JSON.parse(raw) as { c?: unknown; f?: unknown; t?: unknown }
+    if (!activeId || typeof d.c !== 'string' || typeof d.f !== 'string' || typeof d.t !== 'number' || d.f === activeId || Date.now() - d.t > 15000) return
+    const live = (() => {
+      const r = read()
+      return r && r !== memoryCopy ? JSON.parse(r) as Db : db
+    })()
+    const c = live.convs.find((x) => x.id === d.c && memberOf(x, activeId as string) && memberOf(x, d.f as string))
+    if (c && !live.blocks.some((b) => (b.blocker_id === activeId && b.blocked_id === d.f) || (b.blocker_id === d.f && b.blocked_id === activeId))) setTyping(c.id)
+  } catch { /* indicateur facultatif */ }
+}
+
+/** « Je suis en train d'écrire » : au plus une fois toutes les 8 s par conversation, jamais mis en file d'attente, jamais d'erreur visible. */
+export function sendTyping(conversationId: string): void {
+  const my = activeId
+  const mine = my ? db.people[my] : undefined
+  if (!my || !mine || mine.notyp) return
+  const c = db.convs.find((x) => x.id === conversationId && memberOf(x, my))
+  if (!c) return
+  const otherId = c.a === my ? c.b : c.a
+  const other = db.people[otherId]
+  if (!other || isBlocked(my, otherId)) return
+  const now = Date.now()
+  if (now - (typingSentAt.get(c.id) ?? 0) < 8000) return
+  if (!other.remote) {
+    typingSentAt.set(c.id, now)
+    try {
+      window.localStorage.setItem(TYPING_KEY, JSON.stringify({ c: c.id, f: my, t: now, n: Math.random() }))
+    } catch { /* ignoré */ }
+    return
+  }
+  if (c.ch && relayStatus === 'online') {
+    typingSentAt.set(c.id, now)
+    void (async () => {
+      try {
+        const { iv, ct } = await encryptText(c.ch!.key, c.ch!.topic, JSON.stringify({ s: my, t: now }))
+        await publish(getRelay(), c.ch!.topic, JSON.stringify({ cdp: 1, t: 'typ', mid: newId(), iv, ct }))
+      } catch { /* l'indicateur est facultatif */ }
+    })()
+  }
+}
+
+export function getTypingEnabled(): boolean {
+  return !(activeId && db.people[activeId]?.notyp)
+}
+export function setTypingEnabled(on: boolean): void {
+  const p = me()
+  p.notyp = on ? undefined : true
+  save()
 }
 
 // Autre onglet du même navigateur : on recharge les données et on signale les nouveaux messages.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
+    if (e.key === TYPING_KEY && e.newValue) {
+      onTypingFromStorage(e.newValue)
+      return
+    }
     if (e.key !== KEY) return
     const known = new Set(db.messages.map((m) => m.id))
+    const before = new Map(db.messages.map((m) => [m.id, m]))
     const knownHelp = new Set(db.help.map((h) => h.id))
     db = load()
+    const now = new Map(db.messages.map((m) => [m.id, m]))
+    before.forEach((m, id) => {
+      const n = now.get(id)
+      if (!n) emitChange({ kind: 'delete', id, conversation_id: m.conversation_id })
+      else if (n.content !== m.content || (n.edited_at ?? null) !== (m.edited_at ?? null)) emitChange({ kind: 'edit', id, conversation_id: n.conversation_id })
+    })
     db.help.filter((h) => !knownHelp.has(h.id)).forEach((h) => helpListeners.forEach((cb) => cb({ id: h.id, author_id: h.author_id, title: h.title })))
     if (activeId && !db.people[activeId]) {
       setActive(null)
@@ -611,8 +702,49 @@ export async function deleteMessage(m: Message): Promise<void> {
   const i = db.messages.findIndex((x) => x.id === m.id && x.sender_id === my)
   if (i < 0) fail('not_member')
   const [gone] = db.messages.splice(i, 1)
+  const hadOutbox = db.outbox.some((o) => o.msg === gone.id)
+  db.outbox = db.outbox.filter((o) => o.msg !== gone.id) // jamais parti : rien à effacer chez l'autre
   save()
   await delMedia('chat-media', gone.message_attachments.map((a) => a.storage_path))
+  emitChange({ kind: 'delete', id: gone.id, conversation_id: gone.conversation_id })
+  const c = db.convs.find((x) => x.id === gone.conversation_id)
+  const other = c && db.people[c.a === my ? c.b : c.a]
+  if (c?.ch && other?.remote && !hadOutbox && !gone.message_attachments.length && gone.net !== 'local' && gone.net !== 'file') void netDelete(my, c.id, gone.id)
+}
+
+/** Modifie le texte d'un de MES messages. En ligne, la modification est envoyée (chiffrée) ; en mode fichier, elle reste ici. */
+export async function editMessage(messageId: string, content: string): Promise<Message> {
+  const my = me()
+  if (!rulesOk(my)) fail('rules_required')
+  const m = db.messages.find((x) => x.id === messageId && x.sender_id === my.profile.id) ?? fail('not_member')
+  const text = content.trim()
+  if (!text && !m.message_attachments.length) fail('empty_message')
+  if (text.length > LIMITS.messageChars) fail('message_too_long')
+  if (text === m.content) return m
+  const c = convOf(m.conversation_id)
+  const otherId = c.a === my.profile.id ? c.b : c.a
+  if (!db.people[otherId] || isBlocked(my.profile.id, otherId)) fail('contact_unavailable')
+  m.content = text
+  m.edited_at = nextTs()
+  save()
+  emitChange({ kind: 'edit', id: m.id, conversation_id: m.conversation_id })
+  if (c.ch && db.people[otherId].remote && !m.message_attachments.length && m.net !== 'local' && m.net !== 'file') {
+    const waiting = db.outbox.filter((o) => o.msg === m.id)
+    if (waiting.length) {
+      // Pas encore parti : on remplace le message en attente par la nouvelle version (le contact ne verra jamais l'ancienne).
+      db.outbox = db.outbox.filter((o) => o.msg !== m.id)
+      m.net = 'queued'
+      save()
+      void netSend(my.profile.id, c.id, m.id)
+    } else if (m.net === 'failed') {
+      m.net = 'queued'
+      save()
+      void netSend(my.profile.id, c.id, m.id)
+    } else {
+      void netEdit(my.profile.id, c.id, m.id)
+    }
+  }
+  return m
 }
 
 export async function markRead(conversationId: string): Promise<void> {
@@ -1309,6 +1441,25 @@ async function netSend(profileId: string, convId: string, msgId: string): Promis
   }
 }
 
+async function netEdit(profileId: string, convId: string, msgId: string): Promise<void> {
+  const c = db.convs.find((x) => x.id === convId)
+  const m = db.messages.find((x) => x.id === msgId)
+  if (!c?.ch || !m) return
+  try {
+    const { iv, ct } = await encryptText(c.ch.key, c.ch.topic, JSON.stringify({ id: m.id, c: m.content, s: profileId, e: m.edited_at }))
+    await post(profileId, c.ch.topic, JSON.stringify({ cdp: 1, t: 'edit', mid: newId(), iv, ct }))
+  } catch { /* hors ligne : mis en file d'attente par post(), sinon la modification reste locale */ }
+}
+
+async function netDelete(profileId: string, convId: string, msgId: string): Promise<void> {
+  const c = db.convs.find((x) => x.id === convId)
+  if (!c?.ch) return
+  try {
+    const { iv, ct } = await encryptText(c.ch.key, c.ch.topic, JSON.stringify({ id: msgId, s: profileId }))
+    await post(profileId, c.ch.topic, JSON.stringify({ cdp: 1, t: 'del', mid: newId(), iv, ct }))
+  } catch { /* idem */ }
+}
+
 async function netRespond(profileId: string, accept: boolean, mid: string, pk: JsonWebKey, other: { id: string; public_id: string }): Promise<void> {
   const mine = db.people[profileId]
   if (!mine) return
@@ -1405,6 +1556,10 @@ async function handleRelayEvent(profileId: string, ev: RelayEvent): Promise<void
   }
   if (!m || typeof m !== 'object' || m.cdp !== 1 || typeof m.t !== 'string' || typeof m.mid !== 'string' || !SAFE_ID.test(m.mid)) return
   const mid = m.mid
+  if (m.t === 'typ') {
+    await onNetTyping(profileId, ev.topic, m, ev.time) // éphémère : ni curseur, ni liste « déjà vus »
+    return
+  }
   let moved = (db.cursor[profileId] ?? 0) < ev.time
   if (moved) db.cursor[profileId] = ev.time
   if (!db.seenNet.includes(mid)) {
@@ -1416,6 +1571,10 @@ async function handleRelayEvent(profileId: string, ev: RelayEvent): Promise<void
       else if (m.t === 'ref') done = onNetRefuse(profileId, m)
     } else if (m.t === 'msg') {
       done = await onNetMessage(profileId, ev.topic, m)
+    } else if (m.t === 'edit') {
+      done = await onNetEdit(profileId, ev.topic, m)
+    } else if (m.t === 'del') {
+      done = await onNetDelete(profileId, ev.topic, m)
     }
     if (done) {
       db.seenNet.push(mid)
@@ -1514,6 +1673,56 @@ async function onNetMessage(profileId: string, topic: string, m: NetMsg): Promis
   db.messages.push(msg)
   save()
   emitMessage(msg)
+  return true
+}
+
+/** Enveloppe chiffrée reçue sur le sujet d'une conversation : retrouve la conversation, le contact et le contenu (ou null). */
+async function openEnvelope(profileId: string, topic: string, m: NetMsg): Promise<{ conv: Conv; otherId: string; body: Record<string, unknown> } | null> {
+  const conv = db.convs.find((c) => c.ch?.topic === topic && memberOf(c, profileId))
+  if (!conv?.ch || typeof m.iv !== 'string' || typeof m.ct !== 'string') return null
+  const otherId = conv.a === profileId ? conv.b : conv.a
+  if (isBlocked(profileId, otherId) || !db.people[otherId]) return null
+  try {
+    const body = JSON.parse(await decryptText(conv.ch.key, conv.ch.topic, m.iv, m.ct)) as Record<string, unknown>
+    return body && typeof body === 'object' && body.s === otherId ? { conv, otherId, body } : null
+  } catch {
+    return null
+  }
+}
+
+async function onNetTyping(profileId: string, topic: string, m: NetMsg, time: number): Promise<void> {
+  if (Date.now() / 1000 - time > 15) return // vieux (rattrapage) : on ne montre pas « écrit… » pour du passé
+  const o = await openEnvelope(profileId, topic, m)
+  if (o) setTyping(o.conv.id)
+}
+
+async function onNetEdit(profileId: string, topic: string, m: NetMsg): Promise<boolean> {
+  const o = await openEnvelope(profileId, topic, m)
+  if (!o || typeof o.body.id !== 'string' || !SAFE_ID.test(o.body.id) || typeof o.body.c !== 'string') return false
+  syncFromStorage()
+  const msg = db.messages.find((x) => x.id === o.body.id && x.conversation_id === o.conv.id && x.sender_id === o.otherId)
+  if (!msg) return false // le message d'origine n'est pas encore arrivé : on réessaiera au prochain rattrapage
+  const e = typeof o.body.e === 'string' && !Number.isNaN(Date.parse(o.body.e)) ? new Date(o.body.e).toISOString() : nowIso()
+  if (msg.edited_at && msg.edited_at >= e) return true // une version plus récente est déjà là
+  const text = o.body.c.slice(0, LIMITS.messageChars).trim()
+  if (!text) return false
+  msg.content = text
+  msg.edited_at = e
+  save()
+  emitChange({ kind: 'edit', id: msg.id, conversation_id: msg.conversation_id })
+  return true
+}
+
+async function onNetDelete(profileId: string, topic: string, m: NetMsg): Promise<boolean> {
+  const o = await openEnvelope(profileId, topic, m)
+  if (!o || typeof o.body.id !== 'string' || !SAFE_ID.test(o.body.id)) return false
+  syncFromStorage()
+  const i = db.messages.findIndex((x) => x.id === o.body.id && x.conversation_id === o.conv.id && x.sender_id === o.otherId)
+  if (i < 0) return true // déjà supprimé ou jamais reçu
+  const [gone] = db.messages.splice(i, 1)
+  save()
+  await delMedia('chat-media', gone.message_attachments.map((a) => a.storage_path))
+  emitChange({ kind: 'delete', id: gone.id, conversation_id: gone.conversation_id })
   return true
 }
 

@@ -79,6 +79,8 @@ export interface Message {
   message_attachments: Attachment[]
   /** Version locale, conversation en ligne : où en est l'envoi (queued = en attente de connexion, file = pièce jointe à envoyer par fichier). */
   net?: 'queued' | 'sent' | 'failed' | 'file' | 'local'
+  /** Version locale : date de la dernière modification du texte par son auteur (absent = jamais modifié). */
+  edited_at?: string | null
 }
 
 export type HelpStatus = 'open' | 'in_progress' | 'resolved'

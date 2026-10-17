@@ -43,6 +43,31 @@ export const QUOTES: readonly string[] = [
   'L’entraide commence souvent par une phrase simple : « Je peux essayer de t’aider. »',
   'La technologie évolue vite, la bienveillance n’a pas besoin de mise à jour.',
   'Un jour on demande, un jour on répond : le cercle s’agrandit.',
+  'Un écran qui bloque n’est pas une fin, c’est une énigme à résoudre à deux.',
+  'Respirer, relire le message d’erreur, puis demander : trois gestes qui évitent bien des soucis.',
+  'Celui qui explique apprend deux fois.',
+  'Un fichier bien nommé est un cadeau fait à soi-même dans six mois.',
+  'On ne se moque pas de la question de l’autre : on s’en souvient, c’était la nôtre hier.',
+  'Une mise à jour, c’est comme un coup de balai : on la repousse, puis on est content de l’avoir faite.',
+  'Un bon mot de passe est long, unique et jamais confié, même à quelqu’un de gentil.',
+  'Un message poli ouvre plus de solutions qu’un message pressé.',
+  'On avance mieux avec quelqu’un qui dit « montre-moi » qu’avec quelqu’un qui dit « c’est facile ».',
+  'Ce qu’on a compris soi-même, on peut toujours le transmettre.',
+  'Une capture d’écran vaut mille descriptions approximatives.',
+  'Se tromper de bouton est la plus ancienne méthode d’apprentissage numérique.',
+  'Le meilleur moment pour sauvegarder ses photos, c’est avant d’en avoir besoin.',
+  'Un message de confiance se vérifie : l’expéditeur est-il bien celui qu’il prétend être ?',
+  'Dire merci après une aide, c’est donner envie d’aider encore.',
+  'Rien n’oblige à tout comprendre en une fois : une chose aujourd’hui, une autre demain.',
+  'Les petites victoires numériques comptent : un fichier retrouvé, une imprimante qui répond.',
+  'On est toujours le débutant de quelqu’un et l’expert de quelqu’un d’autre.',
+  'Quand un lien paraît trop beau pour être vrai, il est rarement vrai.',
+  'Un écran propre, une corbeille vidée, un esprit tranquille.',
+  'Apprendre à demander précisément, c’est apprendre à résoudre à moitié.',
+  'Un bon voisin numérique, c’est quelqu’un qui répond sans soupirer.',
+  'Prendre cinq minutes pour apprendre un raccourci, c’est gagner des heures sur l’année.',
+  'Une question posée tôt coûte moins cher qu’un problème découvert tard.',
+  'Le calme est la première touche de dépannage.',
 ]
 
 function gcd(a: number, b: number): number {
@@ -67,4 +92,18 @@ export function quoteIndexFor(d: Date, count: number = QUOTES.length): number {
 
 export function quoteOfTheDay(d: Date = new Date()): string {
   return QUOTES[quoteIndexFor(d)]
+}
+
+/** Numéro de la minute (horloge de l'appareil) depuis 1970 : change toutes les 60 s, identique sur tous les appareils à cet instant. */
+export function minuteNumber(d: Date = new Date()): number {
+  return Math.floor(d.getTime() / 60_000)
+}
+
+/** Index de la citation d'une minute donnée : toutes passent avant qu'une se répète, dans un ordre peu prévisible. */
+export function quoteIndexForMinute(minute: number, count: number = QUOTES.length): number {
+  return (((minute * strideFor(count)) % count) + count) % count
+}
+
+export function quoteOfTheMinute(d: Date = new Date()): string {
+  return QUOTES[quoteIndexForMinute(minuteNumber(d))]
 }

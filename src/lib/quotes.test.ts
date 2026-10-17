@@ -27,3 +27,20 @@ test('le numéro de jour suit le calendrier local', () => {
 test('aucune citation n’est attribuée à une personnalité', () => {
   for (const q of QUOTES) assert.doesNotMatch(q, /—|\bdit\b.*:|\bselon\b/i)
 })
+
+test('la citation change chaque minute et reste la même pendant la minute', async () => {
+  const { quoteIndexForMinute, minuteNumber, quoteOfTheMinute } = await import('./quotes.ts')
+  const a = new Date('2026-10-17T20:10:05Z')
+  const b = new Date('2026-10-17T20:10:58Z')
+  const c = new Date('2026-10-17T20:11:01Z')
+  assert.equal(quoteOfTheMinute(a), quoteOfTheMinute(b))
+  assert.notEqual(quoteOfTheMinute(b), quoteOfTheMinute(c))
+  assert.equal(minuteNumber(c) - minuteNumber(a), 1)
+  const seen = new Set<number>()
+  for (let i = 0; i < QUOTES.length; i++) seen.add(quoteIndexForMinute(1000 + i))
+  assert.equal(seen.size, QUOTES.length, 'toutes les citations passent avant qu’une se répète')
+})
+
+test('pas de doublon dans les citations', () => {
+  assert.equal(new Set(QUOTES).size, QUOTES.length)
+})

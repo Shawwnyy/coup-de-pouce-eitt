@@ -19,3 +19,5 @@ plusieurs appareils. Les conversations se font entre les profils créés ici
 
 Ne double-cliquez PAS sur index.html (c'est le fichier source : page blanche).
 Le détail complet est dans README.md (section 00).
+
+MODIFIER / SUPPRIMER : menu "..." d'un de vos messages. EN TRAIN D'ECRIRE : affiche chez l'autre pendant que vous tapez (coupable dans Parametres > Compte). PENSEE DE LA MINUTE : change chaque minute, a droite sur ordinateur, en bas sur telephone (masquable).
