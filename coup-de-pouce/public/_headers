@@ -1,0 +1,7 @@
+# Netlify / Cloudflare Pages — en-têtes de sécurité (remplacez VOTRE-PROJET par votre sous-domaine Supabase)
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https://VOTRE-PROJET.supabase.co; connect-src 'self' https://VOTRE-PROJET.supabase.co wss://VOTRE-PROJET.supabase.co; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'

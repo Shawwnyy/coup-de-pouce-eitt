@@ -1,0 +1,19 @@
+COUP DE POUCE BY EITT
+
+>>> DOUBLE-CLIQUEZ SUR :  Coup-de-Pouce.html  <<<
+
+- Pas d'inscription, pas de mot de passe, rien à installer.
+- Cliquez sur "Commencer" : un profil avec un numéro au hasard (ex. User#4827) est gardé dans votre navigateur.
+- On retrouve quelqu'un par son nom (ex. "Léo.G") ou par son numéro.
+- Vous pouvez en créer d'autres, changer le nom, supprimer un profil.
+- Images, GIF, vidéos et liens fonctionnent (gardés dans ce navigateur).
+
+Quelqu'un utilise l'appli sur un autre appareil ? Sans serveur on ne le voit pas tout seul :
+menu en bas de page "Autre appareil (code)" -> on s'echange un code, puis des fichiers de messages.
+
+Important : tout reste sur CET ordinateur, dans CE navigateur. Ce n'est pas un chat entre
+plusieurs appareils. Les conversations se font entre les profils créés ici
+(ouvrez 2 onglets, un par profil).
+
+Ne double-cliquez PAS sur index.html (c'est le fichier source : page blanche).
+Le détail complet est dans README.md (section 00).
