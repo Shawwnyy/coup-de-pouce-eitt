@@ -11,7 +11,7 @@ COUP DE POUCE BY EITT
 Quelqu'un utilise l'appli sur un autre appareil ? Sans serveur on ne le voit pas tout seul :
 menu en bas de page "Autre appareil (code)" -> on s'echange un code, puis des fichiers de messages.
 Votre code de partage (CDP1...) est aussi affiche dans votre profil, avec un bouton "Copier mon code".
-MODE EN LIGNE (beta, desactive au depart) : interrupteur "Passer en ligne" sous l'en-tete. En ligne, on ajoute quelqu'un en tapant son User# dans la recherche ; la demande arrive en quelques secondes et on s'ecrit en texte chiffre (via un relais public, par defaut ntfy.sh). Images/videos : fichier d'echange. Pas de moderation. Voir README pour les limites.
+MODE EN LIGNE (beta, desactive au depart) : interrupteur "Passer en ligne" sous l'en-tete. En ligne, on ajoute quelqu'un en tapant son User# dans la recherche ; la demande arrive en quelques secondes et on s'ecrit en texte chiffre (via un relais public, par defaut ntfy.sh). Images/videos : fichier d'echange. Pas de moderation. IMPORTANT : les DEUX personnes doivent cliquer "Passer en ligne". Un contact ajoute par code seulement ne recoit rien tout seul : un message "Pas envoye" s'affiche et un bouton propose de passer en ligne et d'envoyer la demande. Voir README pour les limites.
 
 Important : tout reste sur CET ordinateur, dans CE navigateur. Ce n'est pas un chat entre
 plusieurs appareils. Les conversations se font entre les profils créés ici

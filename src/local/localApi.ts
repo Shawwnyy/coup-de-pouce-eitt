@@ -561,8 +561,10 @@ export async function sendMessage(p: { conversationId: string; content: string; 
     attachments.push({ id: newId(), storage_path: path, file_name: cleanName(p.file.blob.name), mime_type: p.file.type.mime, file_size: p.file.blob.size })
   }
   const msg: Message = { id: newId(), conversation_id: c.id, sender_id: my.profile.id, content, created_at: nextTs(), message_attachments: attachments }
-  const viaRelay = Boolean(db.people[otherId].remote && c.ch)
+  const remote = Boolean(db.people[otherId].remote)
+  const viaRelay = remote && Boolean(c.ch)
   if (viaRelay) msg.net = attachments.length ? 'file' : 'queued'
+  else if (remote) msg.net = 'local' // contact d'un autre appareil sans lien en ligne : le message reste ici, et on le dit
   db.messages.push(msg)
   try {
     save()
@@ -1297,6 +1299,24 @@ async function netRespond(profileId: string, accept: boolean, mid: string, pk: J
   save()
   await syncOnline()
   await post(profileId, topic, JSON.stringify({ cdp: 1, t: 'acc', mid: newId(), re: mid, to: other.public_id, from, pk: keys.pub }))
+  releaseLocalMessages(profileId, conv.id)
+}
+
+/** Le lien en ligne vient d'être créé : les textes écrits avant (restés « sur cet appareil ») partent maintenant, dans l'ordre. */
+function releaseLocalMessages(profileId: string, convId: string): void {
+  const c = db.convs.find((x) => x.id === convId)
+  if (!c?.ch) return
+  const list = db.messages
+    .filter((m) => m.conversation_id === convId && m.sender_id === profileId && (m.net === 'local' || m.net === undefined))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+  if (!list.length) return
+  for (const m of list) m.net = m.message_attachments.length ? 'file' : 'queued'
+  save()
+  const texts = list.filter((m) => m.net === 'queued').slice(-30)
+  for (const m of list) if (m.net === 'queued' && !texts.includes(m)) m.net = 'local'
+  void (async () => {
+    for (const m of texts) await netSend(profileId, convId, m.id)
+  })()
 }
 
 /** « User#42 », « 42 », « #0042 »… → « User#0042 » (ou null si ça n'y ressemble pas). */
@@ -1314,20 +1334,32 @@ export async function sendOnlineRequest(query: string): Promise<void> {
   if (pid === my.profile.public_id) fail('contact_unavailable')
   if (Object.values(db.people).some((p) => !p.remote && p.profile.public_id === pid)) fail('already_local')
   const id = my.profile.id
-  const known = Object.values(db.people).find((p) => p.remote && !p.pend && p.profile.public_id === pid && db.convs.some((c) => memberOf(c, id) && memberOf(c, p.profile.id)))
+  // Déjà en ligne avec cette personne : rien à demander. Un contact ajouté seulement par code (fichier) peut, lui, passer en ligne.
+  const known = Object.values(db.people).find((p) => p.remote && !p.pend && p.profile.public_id === pid && db.convs.some((c) => memberOf(c, id) && memberOf(c, p.profile.id) && c.ch))
   if (known) fail('already_contact')
   const mineReqs = db.netreq.filter((x) => x.local === id && x.to_public_id === pid)
-  if (mineReqs.some((x) => x.status === 'pending')) return
+  const waiting = mineReqs.find((x) => x.status === 'pending')
   if (mineReqs.some((x) => x.status === 'refused' && Date.now() - new Date(x.responded_at ?? x.created_at).getTime() < REFUSAL_COOLDOWN_MS)) fail('request_refused_recently')
-  if (db.netreq.filter((x) => x.local === id && x.status === 'pending').length >= 20) fail('rate_limited')
+  if (!waiting && db.netreq.filter((x) => x.local === id && x.status === 'pending').length >= 20) fail('rate_limited')
   const keys = my.keys ?? (await genKeyPair())
   const p = db.people[id] ?? fail('not_authenticated')
   if (!p.keys) p.keys = keys
-  const nr: NetReq = { id: newId(), local: id, to_public_id: pid, created_at: nowIso(), status: 'pending', responded_at: null }
+  // Demande déjà en attente : on la RENVOIE telle quelle (même identifiant, donc sans doublon chez l'autre) au cas où le relais l'aurait perdue.
+  const nr: NetReq = waiting ?? { id: newId(), local: id, to_public_id: pid, created_at: nowIso(), status: 'pending', responded_at: null }
   const body = JSON.stringify({ cdp: 1, t: 'req', mid: nr.id, to: pid, from: { id, public_id: p.profile.public_id, display_name: p.profile.display_name }, pk: p.keys?.pub, ts: nr.created_at })
   await publish(getRelay(), await mailboxTopic(pid), body)
-  db.netreq.push(nr)
-  save()
+  if (!waiting) {
+    db.netreq.push(nr)
+    save()
+  }
+}
+
+/** Où en est ma demande en ligne vers ce numéro (pour l'afficher dans la conversation). */
+export function onlineRequestState(publicId: string): 'none' | 'pending' | 'refused' {
+  const mine = db.netreq.filter((x) => x.local === activeId && x.to_public_id === publicId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+  if (!mine) return 'none'
+  if (mine.status === 'pending') return 'pending'
+  return mine.status === 'refused' && Date.now() - new Date(mine.responded_at ?? mine.created_at).getTime() < REFUSAL_COOLDOWN_MS ? 'refused' : 'none'
 }
 
 // ---- Réception
@@ -1410,12 +1442,13 @@ async function onNetAccept(profileId: string, m: NetMsg): Promise<boolean> {
   if (!again) return false
   const person = upsertRemote(card, 'Contact ajouté en ligne')
   person.pk = pk
-  ensureConversation(profileId, card.id).ch = ch
+  const conv = ensureConversation(profileId, card.id)
+  conv.ch = ch
   again.status = 'accepted'
   again.responded_at = nowIso()
   again.person = card.id
   save()
-  void syncOnline()
+  void syncOnline().then(() => releaseLocalMessages(profileId, conv.id))
   return true
 }
 
@@ -1455,7 +1488,7 @@ async function onNetMessage(profileId: string, topic: string, m: NetMsg): Promis
 }
 
 // ---- Informations pour l'interface
-export interface ConversationLink { mode: 'local' | 'file' | 'online'; online: boolean }
+export interface ConversationLink { mode: 'local' | 'file' | 'online'; online: boolean; peerPublicId?: string }
 
 /** Comment cette conversation circule : entre profils de cet appareil, par fichier, ou en ligne (chiffrée). */
 export function conversationLink(conversationId: string): ConversationLink {
@@ -1464,7 +1497,7 @@ export function conversationLink(conversationId: string): ConversationLink {
   if (!my || !c || !memberOf(c, my)) return { mode: 'local', online: false }
   const other = db.people[c.a === my ? c.b : c.a]
   if (!other?.remote) return { mode: 'local', online: false }
-  return { mode: c.ch ? 'online' : 'file', online: Boolean(db.people[my]?.online) }
+  return { mode: c.ch ? 'online' : 'file', online: Boolean(db.people[my]?.online), peerPublicId: other.profile.public_id }
 }
 
 /** Code à 8 chiffres identique chez les deux personnes : à comparer par un autre moyen pour être sûr de parler à la bonne. */
@@ -1474,7 +1507,13 @@ export async function conversationVerification(conversationId: string): Promise<
 }
 
 export function messageNet(id: string): Message['net'] | undefined {
-  return db.messages.find((m) => m.id === id)?.net
+  const m = db.messages.find((x) => x.id === id)
+  if (!m) return undefined
+  if (m.net) return m.net
+  if (!activeId || m.sender_id !== activeId) return undefined
+  const c = db.convs.find((x) => x.id === m.conversation_id)
+  const other = c && db.people[c.a === activeId ? c.b : c.a]
+  return other?.remote && !c?.ch ? 'local' : undefined // message écrit avant la mise à jour : lui aussi n'est jamais parti
 }
 
 if (typeof window !== 'undefined') {

@@ -15,7 +15,7 @@ import { previewUrl, validateFile } from '../lib/files'
 import { dayKey, displayName, formatBytes, formatDateTime, formatDayLabel, formatShort, formatTime } from '../lib/format'
 import { useAsync, useCopy, useDocumentTitle } from '../lib/hooks'
 import { LOCAL } from '../lib/mode'
-import { NetBadge, OnlineConvNotice } from '../local/OnlineBar'
+import { CrossDeviceGuide, NetBadge, OnlineConvNotice } from '../local/OnlineBar'
 import { CHAT_POLICY } from '../lib/policies'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from '../lib/router'
 import type { ConversationSummary, Message } from '../types'
@@ -59,6 +59,7 @@ function ConversationList({ items, loading, error, reload }: { items: Conversati
           {LOCAL ? 'Retrouvez quelqu’un par son nom ou son identifiant pour lui écrire (après acceptation de votre demande d’ajout).' : 'Retrouvez quelqu’un grâce à son identifiant (par exemple User#0001) pour lui écrire.'}
         </EmptyState>
       )}
+      {LOCAL && items && items.length === 0 && <div className="guide-narrow"><CrossDeviceGuide /></div>}
       <ul className="conv-items">
         {items?.map((c) => (
           <li key={c.conversation_id}>
@@ -554,6 +555,7 @@ export default function MessagesPage() {
             <EmptyState icon="chat" title="Choisissez une conversation">
               Sélectionnez une conversation dans la liste, ou retrouvez quelqu’un grâce à son {LOCAL ? 'nom ou son identifiant' : 'identifiant public'} pour lui écrire.
             </EmptyState>
+            {LOCAL && <CrossDeviceGuide />}
           </div>
         )}
       </section>

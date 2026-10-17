@@ -2129,8 +2129,9 @@ mark.todo {
 input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 
 /* Mode en ligne / hors ligne */
-.online-bar { flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; text-align: left; }
-.online-bar .ob-text { flex: 1 1 18rem; min-width: 0; }
+.online-bar { flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px 12px; text-align: left; }
+.online-bar .ob-text { flex: 1 1 18rem; min-width: 0; overflow-wrap: anywhere; }
+.online-bar .btn { margin-left: auto; }
 .ob-pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); white-space: nowrap; }
 .ob-dot { width: 9px; height: 9px; border-radius: 50%; background: #8a98ad; }
 .ob-on { border-color: #067647; } .ob-on .ob-dot { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
@@ -2140,6 +2141,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 @keyframes ob-pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .ob-wait .ob-dot { animation: none; } }
 .online-conv { margin: 0; padding: 6px 12px; display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; border-top: 1px solid var(--border); }
+.online-conv > svg { flex: none; margin-top: 2px; }
+.online-warn { flex-wrap: nowrap; gap: 10px; padding: 10px 14px; background: color-mix(in srgb, var(--warn, #f5a524) 14%, transparent); border-top: 2px solid var(--warn, #f5a524); font-size: 0.9rem; }
+.online-warn .grow { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.net-local { color: var(--warn, #f5a524); font-weight: 600; }
+.guide-card { margin: 1rem; text-align: left; max-width: 34rem; }
+.guide-card h2 { margin: 0; font-size: 1.1rem; }
+.guide-steps { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 8px; }
+.guide-narrow { display: block; }
+@media (min-width: 900px) { .guide-narrow { display: none; } }
 .net-badge { font-size: 0.75rem; color: var(--muted); }
 .net-failed { color: var(--danger); }
 .online-target h2 { margin: 0; }

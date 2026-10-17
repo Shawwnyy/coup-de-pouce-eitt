@@ -2,7 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { ConfirmDialog } from '../components/Dialogs'
 import { Alert, Icon } from '../components/ui'
 import { friendlyError } from '../lib/errors'
-import { conversationLink, conversationVerification, getOnline, messageNet, setOnline, setRelay, subscribeOnlineStatus, type OnlineInfo } from './localApi'
+import { Link } from '../lib/router'
+import { conversationLink, conversationVerification, getOnline, messageNet, onlineRequestState, sendOnlineRequest, setOnline, setRelay, subscribeOnlineStatus, type OnlineInfo } from './localApi'
 
 /** État du mode en ligne du profil actif ; se met à jour quand la connexion change et toutes les 2 s (file d'attente). */
 export function useOnline(): OnlineInfo {
@@ -37,7 +38,7 @@ const STATUS_TEXT: Record<OnlineInfo['status'], string> = {
 }
 
 /** Interrupteur En ligne / Hors ligne avec confirmation avant d'activer (ce qui part sur internet est expliqué). */
-export function useOnlineToggle(): { info: OnlineInfo; ask: () => void; dialog: ReactNode } {
+export function useOnlineToggle(onEnabled?: () => void): { info: OnlineInfo; ask: () => void; dialog: ReactNode } {
   const info = useOnline()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -49,6 +50,7 @@ export function useOnlineToggle(): { info: OnlineInfo; ask: () => void; dialog: 
     try {
       await setOnline(on)
       setOpen(false)
+      if (on) onEnabled?.()
     } catch (e) {
       setError(friendlyError(e))
     } finally {
@@ -91,7 +93,7 @@ export function OnlineBar() {
       <span className="ob-text">
         {info.enabled
           ? 'Demandes et messages texte passent par un relais public (chiffrés). Pas de modération.'
-          : 'Tout est gardé dans ce navigateur. Passez en ligne pour ajouter quelqu’un d’un autre appareil avec son User#. Pas de modération.'}
+          : 'Tout reste dans ce navigateur. Pour écrire à quelqu’un d’un autre appareil, vous deux devez passer en ligne, puis chercher son User#. Pas de modération.'}
         {info.enabled && info.queued > 0 && <> {info.queued} envoi{info.queued > 1 ? 's' : ''} en attente.</>}
       </span>
       <button type="button" className="btn btn-sm" onClick={ask} aria-pressed={info.enabled}>
@@ -164,13 +166,7 @@ export function OnlineConvNotice({ conversationId }: { conversationId: string })
     }
   }, [conversationId, link.mode])
   if (link.mode === 'local') return null
-  if (link.mode === 'file') {
-    return (
-      <p className="hint online-conv" role="note">
-        <Icon name="file" size={14} /> Contact d’un autre appareil : les messages se transmettent par fichier (page « Autre appareil »). Pour des messages directs, ajoutez-vous en ligne avec le User#.
-      </p>
-    )
-  }
+  if (link.mode === 'file') return <UpgradeCard peer={link.peerPublicId ?? ''} />
   return (
     <p className="hint online-conv" role="note">
       <Icon name="lock" size={14} />{' '}
@@ -181,7 +177,13 @@ export function OnlineConvNotice({ conversationId }: { conversationId: string })
   )
 }
 
-const NET_TEXT = { queued: 'En attente d’envoi', sent: 'Envoyé en ligne', failed: 'Échec de l’envoi en ligne', file: 'Pièce jointe : à envoyer par fichier' } as const
+const NET_TEXT = {
+  queued: 'En attente d’envoi',
+  sent: 'Envoyé en ligne',
+  failed: 'Échec de l’envoi en ligne',
+  file: 'Pièce jointe : à envoyer par fichier',
+  local: 'Pas envoyé : reste sur cet appareil (voir ci-dessous)',
+} as const
 
 /** Petit texte sous mes messages d'une conversation en ligne : envoyé, en attente, à envoyer par fichier. */
 export function NetBadge({ id }: { id: string }) {
@@ -194,4 +196,76 @@ export function NetBadge({ id }: { id: string }) {
   }, [id])
   if (!state) return null
   return <span className={`net-badge net-${state}`}>{NET_TEXT[state]}</span>
+}
+
+/** Conversation avec quelqu'un d'un autre appareil SANS lien en ligne : on dit clairement que rien ne part, et on propose de corriger en un clic. */
+function UpgradeCard({ peer }: { peer: string }) {
+  const [tick, setTick] = useState(0)
+  const [state, setState] = useState<'idle' | 'sending'>('idle')
+  const [err, setErr] = useState<string | null>(null)
+  const [sentNow, setSentNow] = useState(false)
+  async function send() {
+    setState('sending')
+    setErr(null)
+    try {
+      await sendOnlineRequest(peer)
+      setSentNow(true)
+    } catch (e) {
+      setErr(friendlyError(e))
+    } finally {
+      setState('idle')
+      setTick((n) => n + 1)
+    }
+  }
+  const { info, ask, dialog } = useOnlineToggle(() => void send())
+  const req = onlineRequestState(peer)
+  void tick
+  const pending = req === 'pending'
+  return (
+    <section className="online-conv online-warn" role="note" aria-label="Ce message ne part pas tout seul">
+      <Icon name="alert" size={18} />
+      <div className="grow stack-sm">
+        <strong>{peer || 'Cette personne'} est sur un autre appareil : vos messages ne lui arrivent pas tout seuls.</strong>
+        {!info.enabled && (
+          <>
+            <span>Pour qu’elle les reçoive : passez en ligne et envoyez-lui une demande d’ajout. Elle doit aussi être en ligne et accepter. Vos messages déjà écrits partiront alors automatiquement.</span>
+            <span className="row"><button type="button" className="btn btn-sm btn-primary" onClick={ask}><Icon name="globe" size={16} /> Passer en ligne et envoyer la demande à {peer}</button></span>
+          </>
+        )}
+        {info.enabled && !pending && req !== 'refused' && (
+          <>
+            <span>Vous êtes en ligne. Envoyez une demande d’ajout à {peer} : dès qu’elle l’accepte (pop-up verte chez elle), le chat devient direct et chiffré.</span>
+            <span className="row"><button type="button" className="btn btn-sm btn-primary" disabled={state === 'sending'} onClick={() => void send()}><Icon name="plus" size={16} /> {state === 'sending' ? 'Envoi…' : `Envoyer la demande à ${peer}`}</button></span>
+          </>
+        )}
+        {info.enabled && pending && (
+          <>
+            <span><strong>{sentNow ? 'Demande envoyée.' : 'Demande en attente.'}</strong> {peer} doit ouvrir Coup de Pouce, cliquer « Passer en ligne », puis accepter dans la pop-up verte. Vos messages partiront dès qu’elle aura accepté.</span>
+            <span className="row"><button type="button" className="btn btn-sm" disabled={state === 'sending'} onClick={() => void send()}><Icon name="refresh" size={16} /> {state === 'sending' ? 'Envoi…' : 'Renvoyer la demande'}</button></span>
+          </>
+        )}
+        {info.enabled && req === 'refused' && <span>{peer} a refusé votre demande : vous pourrez la renouveler dans 24 h.</span>}
+        {err && <Alert kind="error">{err}</Alert>}
+        <span className="hint">Sans internet : <Link to="/echanger">envoyez vos messages par fichier</Link> (page « Autre appareil »).</span>
+      </div>
+      {dialog}
+    </section>
+  )
+}
+
+/** Explication en 3 étapes quand on n'a encore aucune conversation. */
+export function CrossDeviceGuide() {
+  const { info, ask, dialog } = useOnlineToggle()
+  return (
+    <section className="card stack guide-card" aria-label="Écrire à quelqu’un d’un autre appareil">
+      <h2>Écrire à quelqu’un d’un autre appareil</h2>
+      <ol className="guide-steps">
+        <li><strong>Vous deux</strong> : cliquez sur « Passer en ligne » (le point devient vert). {info.enabled ? <span className="chip static chip-ok">Vous êtes en ligne</span> : <span className="chip static">Vous êtes hors ligne</span>}</li>
+        <li><strong>Un de vous</strong> : <Link to="/recherche">cherchez le User#</Link> de l’autre (par exemple User#4827) et envoyez la demande.</li>
+        <li><strong>L’autre</strong> : accepte dans la pop-up verte. Le chat (texte chiffré) est prêt, des deux côtés.</li>
+      </ol>
+      {!info.enabled && <div className="row"><button type="button" className="btn btn-primary btn-sm" onClick={ask}><Icon name="globe" size={16} /> Passer en ligne</button></div>}
+      {dialog}
+    </section>
+  )
 }
