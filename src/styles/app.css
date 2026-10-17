@@ -2238,6 +2238,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .room-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.5rem; font-size: 0.85rem; }
 .room-tag { font-size: 0.7rem; padding: 1px 8px; display: inline-flex; align-items: center; gap: 4px; }
 .room-bad { font-size: 0.7rem; padding: 1px 8px; display: inline-flex; align-items: center; gap: 4px; background: #b42318; color: #fff; border-color: #ff3b30; }
+.room-time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.8rem; }
+.room-edited { font-size: 0.8rem; }
+.room-edit { margin-top: 0.25rem; }
+.room-typing { min-height: 1.4rem; margin: 0; font-size: 0.88rem; color: var(--muted); display: flex; align-items: center; gap: 0.4rem; font-style: italic; }
 .room-meta .icon-btn { width: 1.6rem; height: 1.6rem; min-width: 0; min-height: 0; padding: 0; margin: -0.2rem 0; }
 .room-text { margin: 0.1rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .room-msg.mine .room-text { color: var(--primary); }

@@ -242,6 +242,17 @@ export function roomSignedText(m: { mid: string; n: string; d: string; ts: strin
   return ['cdp1-room', 'general', m.mid, m.n, m.d, m.ts, m.c].join('\n')
 }
 
+/** Texte signé pour modifier, supprimer ou signaler « j'écris » (le préfixe empêche de réutiliser une signature d'un autre type). */
+export function roomEditSignedText(m: { x: string; n: string; ts: string; c: string }): string {
+  return ['cdp1-room', 'general', 'edit', m.x, m.n, m.ts, m.c].join('\n')
+}
+export function roomDelSignedText(m: { x: string; n: string; ts: string }): string {
+  return ['cdp1-room', 'general', 'del', m.x, m.n, m.ts].join('\n')
+}
+export function roomTypSignedText(m: { n: string; d: string; ts: string }): string {
+  return ['cdp1-room', 'general', 'typ', m.n, m.d, m.ts].join('\n')
+}
+
 export async function signRoom(priv: JsonWebKey, text: string): Promise<string> {
   const key = await crypto.subtle.importKey('jwk', { kty: priv.kty, crv: priv.crv, x: priv.x, y: priv.y, d: priv.d }, SIGN, false, ['sign'])
   return toB64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(text)))

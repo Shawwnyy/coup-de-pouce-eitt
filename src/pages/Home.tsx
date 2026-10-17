@@ -90,7 +90,7 @@ export default function Home() {
           {LOCAL && (
             <Link to="/salon" className="tile">
               <Icon name="globe" size={26} />
-              <strong>Salon général</strong>
+              <strong>Discussion générale</strong>
               <span className="muted">Discuter avec tout le monde. Public et sans modération : à utiliser avec prudence.</span>
             </Link>
           )}

@@ -1,5 +1,7 @@
 /** Transforme les erreurs techniques (Supabase, réseau) en messages compréhensibles. */
 const MESSAGES: Record<string, string> = {
+  not_your_message: 'Vous ne pouvez modifier ou supprimer que vos propres messages.',
+  room_message_gone: 'Ce message n’existe plus.',
   rate_limited: 'Vous allez trop vite. Patientez quelques instants avant de réessayer.',
   contact_unavailable: 'Cette personne ne peut pas être contactée pour le moment.',
   rules_required: 'Vous devez d’abord lire et accepter les règles de la communauté.',

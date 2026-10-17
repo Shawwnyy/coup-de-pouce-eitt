@@ -12,6 +12,13 @@ const tf = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit'
 export const formatDateTime = (iso: string) => dtf.format(new Date(iso))
 export const formatDate = (iso: string) => df.format(new Date(iso))
 export const formatTime = (iso: string) => tf.format(new Date(iso))
+const tfs = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+const dfs = new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: '2-digit' })
+/** Heure à la seconde (« 20:06:31 ») ; la date (« 17/10 ») s'ajoute si ce n'est pas aujourd'hui. */
+export const formatTimeSeconds = (iso: string) => {
+  const d = new Date(iso)
+  return new Date().toDateString() === d.toDateString() ? tfs.format(d) : `${dfs.format(d)} ${tfs.format(d)}`
+}
 
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()

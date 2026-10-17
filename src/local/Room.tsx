@@ -3,9 +3,9 @@ import { ConfirmDialog } from '../components/Dialogs'
 import { Menu } from '../components/Menu'
 import { Alert, Avatar, Icon } from '../components/ui'
 import { friendlyError } from '../lib/errors'
-import { formatTime } from '../lib/format'
+import { formatTimeSeconds } from '../lib/format'
 import { useDocumentTitle } from '../lib/hooks'
-import { getRoomInfo, joinRoom, listRoom, muteRoomUser, sendRoom, setOnline, subscribeOnlineStatus, subscribeRoom, unmuteRoomUser, type RoomInfo, type RoomView } from './localApi'
+import { deleteRoomMessage, editRoomMessage, getRoomInfo, getRoomTypers, joinRoom, listRoom, muteRoomUser, sendRoom, sendRoomTyping, setOnline, subscribeOnlineStatus, subscribeRoom, unmuteRoomUser, type RoomInfo, type RoomTypist, type RoomView } from './localApi'
 
 const relayHost = (url: string): string => {
   try {
@@ -31,6 +31,31 @@ function useRoom(): { info: RoomInfo; msgs: RoomView[] } {
     }
   }, [])
   return state
+}
+
+/** Personnes qui écrivent : remis à jour à chaque événement et chaque seconde (l'indicateur s'éteint tout seul). */
+function useTypers(): RoomTypist[] {
+  const [list, setList] = useState<RoomTypist[]>(() => getRoomTypers())
+  useEffect(() => {
+    const update = () => setList((old) => {
+      const next = getRoomTypers()
+      return old.length === next.length && old.every((o, i) => o.n === next[i].n && o.label === next[i].label) ? old : next
+    })
+    update()
+    const off = subscribeRoom(update)
+    const t = window.setInterval(update, 1000)
+    return () => {
+      off()
+      window.clearInterval(t)
+    }
+  }, [])
+  return list
+}
+
+function typingSentence(list: RoomTypist[]): string {
+  if (list.length === 1) return `${list[0].label} est en train d’écrire…`
+  if (list.length === 2) return `${list[0].label} et ${list[1].label} sont en train d’écrire…`
+  return `${list[0].label}, ${list[1].label} et ${list.length - 2} autre${list.length - 2 > 1 ? 's' : ''} sont en train d’écrire…`
 }
 
 function JoinDialog({ info, onClose }: { info: RoomInfo; onClose: () => void }) {
@@ -66,9 +91,28 @@ function JoinDialog({ info, onClose }: { info: RoomInfo; onClose: () => void }) 
   )
 }
 
-function Line({ m, onMute }: { m: RoomView; onMute: () => void }) {
+function Line({ m, onMute, onDelete }: { m: RoomView; onMute: () => void; onDelete: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(m.c)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const max = 300
+  async function save() {
+    if (busy) return
+    if (!draft.trim()) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await editRoomMessage(m.id, draft)
+      setEditing(false)
+    } catch (e) {
+      setErr(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
-    <li className={`room-msg${m.mine ? ' mine' : ''}`}>
+    <li className={`room-msg${m.mine ? ' mine' : ''}`} data-mid={m.id}>
       <Avatar profile={{ display_name: m.d, public_id: m.n, avatar_path: null }} size={34} />
       <div className="room-body">
         <div className="room-meta">
@@ -79,22 +123,58 @@ function Line({ m, onMute }: { m: RoomView; onMute: () => void }) {
             <span className="chip static room-tag"><Icon name="laptop" size={12} /> cet appareil</span>
           )}
           {m.bad && <span className="chip static room-bad" role="note"><Icon name="alert" size={12} /> autre clé que d’habitude pour ce numéro : autre personne ou usurpation</span>}
-          <time dateTime={m.t} className="muted">{formatTime(m.t)}</time>
-          {!m.mine && (
+          <time dateTime={m.t} className="room-time muted" title={m.src === 'n' && !m.mine ? 'Heure de réception par le relais' : undefined}>{formatTimeSeconds(m.t)}</time>
+          {m.mine ? (
+            <Menu label="Actions sur votre message" align="right">
+              <button type="button" className="menu-item" onClick={() => { setDraft(m.c); setErr(null); setEditing(true) }}><Icon name="doc" size={16} /> Modifier</button>
+              <button type="button" className="menu-item danger" onClick={onDelete}><Icon name="trash" size={16} /> Supprimer</button>
+            </Menu>
+          ) : (
             <Menu label={`Actions sur le message de ${m.n}`} align="right">
               <button type="button" className="menu-item danger" onClick={onMute}><Icon name="block" size={16} /> Masquer cette personne</button>
             </Menu>
           )}
         </div>
-        <p className="room-text">{m.c}</p>
+        {editing ? (
+          <div className="room-edit stack">
+            <textarea
+              className="input"
+              rows={2}
+              aria-label="Modifier le message"
+              value={draft}
+              maxLength={max + 100}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setEditing(false)
+                else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  void save()
+                }
+              }}
+            />
+            {err && <Alert kind="error">{err}</Alert>}
+            <div className="row">
+              <button type="button" className="btn btn-primary btn-sm" disabled={busy || !draft.trim() || draft.length > max} onClick={() => void save()}>Enregistrer</button>
+              <button type="button" className="btn btn-sm" onClick={() => setEditing(false)}>Annuler</button>
+              <span className={`hint${draft.length > max ? ' field-error' : ''}`}>{draft.length}/{max}</span>
+            </div>
+          </div>
+        ) : (
+          <p className="room-text">{m.c}{m.e && <span className="room-edited muted" title={`Modifié à ${formatTimeSeconds(m.e)}`}> (modifié)</span>}</p>
+        )}
       </div>
     </li>
   )
 }
 
 export function RoomPage() {
-  useDocumentTitle('Salon général')
+  useDocumentTitle('Discussion générale')
   const { info, msgs } = useRoom()
+  const typers = useTypers()
+  const [toDelete, setToDelete] = useState<RoomView | null>(null)
+  const [delBusy, setDelBusy] = useState(false)
+  const [delError, setDelError] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -127,8 +207,8 @@ export function RoomPage() {
   return (
     <div className="page room-page">
       <header className="page-head">
-        <h1>Salon général</h1>
-        <p className="muted">Un salon de discussion pour tous les profils.</p>
+        <h1>Discussion générale</h1>
+        <p className="muted">Un salon de discussion pour tous les profils : écrivez, modifiez ou supprimez vos messages.</p>
       </header>
 
       <Alert kind="warn" title="Salon ouvert à tous, sans modération">
@@ -155,10 +235,12 @@ export function RoomPage() {
           <p className="muted room-empty">Aucun message pour l’instant. Écrivez le premier, avec bienveillance.</p>
         ) : (
           <ul className="room-ul">
-            {msgs.map((m) => <Line key={m.id} m={m} onMute={() => { try { muteRoomUser(`${m.n}|${m.fp}`) } catch (e) { setError(friendlyError(e)) } }} />)}
+            {msgs.map((m) => <Line key={m.id} m={m} onMute={() => { try { muteRoomUser(`${m.n}|${m.fp}`) } catch (e) { setError(friendlyError(e)) } }} onDelete={() => { setDelError(null); setToDelete(m) }} />)}
           </ul>
         )}
       </div>
+
+      <p className="room-typing" role="status" aria-live="polite">{typers.length > 0 ? <><span className="typing-dots" aria-hidden="true"><i /><i /><i /></span> {typingSentence(typers)}</> : '\u00a0'}</p>
 
       <form className="room-composer" onSubmit={(e) => void submit(e)}>
         {error && <Alert kind="error">{error}</Alert>}
@@ -171,7 +253,10 @@ export function RoomPage() {
             placeholder="Écrire dans le salon…"
             value={text}
             maxLength={info.maxChars + 100}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value)
+              if (e.target.value.trim().length >= 2) sendRoomTyping()
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
@@ -200,6 +285,31 @@ export function RoomPage() {
         </details>
       )}
       {joinOpen && <JoinDialog info={info} onClose={() => setJoinOpen(false)} />}
+      {toDelete && (
+        <ConfirmDialog
+          title="Supprimer ce message ?"
+          confirmLabel="Supprimer"
+          danger
+          busy={delBusy}
+          error={delError}
+          onCancel={() => setToDelete(null)}
+          onConfirm={() => {
+            setDelBusy(true)
+            setDelError(null)
+            deleteRoomMessage(toDelete.id)
+              .then(() => setToDelete(null))
+              .catch((e) => setDelError(friendlyError(e)))
+              .finally(() => setDelBusy(false))
+          }}
+        >
+          <p>« {toDelete.c.length > 80 ? `${toDelete.c.slice(0, 80)}…` : toDelete.c} »</p>
+          {toDelete.src === 'n' ? (
+            <p className="muted">Une demande de suppression signée part sur le relais : le message disparaît chez les personnes qui sont connectées ou qui se connecteront. Celles qui l’ont déjà lu l’ont lu, et le relais peut le garder quelques heures.</p>
+          ) : (
+            <p className="muted">Le message disparaît pour tous les profils de cet appareil.</p>
+          )}
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

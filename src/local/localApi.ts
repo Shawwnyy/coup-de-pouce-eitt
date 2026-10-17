@@ -13,7 +13,7 @@ import type {
 import { CATEGORIES, LIMITS, RULES_VERSION } from '../lib/config.ts'
 import { sniffType, type Sniffed } from '../lib/files.ts'
 import {
-  DEFAULT_RELAY, ROOM_MAX_CHARS, ROOM_TOPIC, cleanPublicKey, decryptText, deriveChannel, encryptText, genKeyPair, genSignKeyPair, keyFingerprint, mailboxTopic, normalizeRelay, publish, roomSignedText, signRoom, subscribe, verificationCode, verifyRoom,
+  DEFAULT_RELAY, ROOM_MAX_CHARS, ROOM_TOPIC, cleanPublicKey, decryptText, deriveChannel, encryptText, genKeyPair, genSignKeyPair, keyFingerprint, mailboxTopic, normalizeRelay, publish, roomDelSignedText, roomEditSignedText, roomSignedText, roomTypSignedText, signRoom, subscribe, verificationCode, verifyRoom,
   type Channel, type KeyPair, type RelayEvent, type RelayStatus,
 } from './online.ts'
 
@@ -53,7 +53,7 @@ interface Outbox { id: string; profile: string; topic: string; body: string; msg
 interface BlockRow { blocker_id: string; blocked_id: string; created_at: string }
 interface HelpRow { id: string; author_id: string; title: string; description: string; category: string; status: HelpStatus; image_path: string | null; urgent?: boolean; created_at: string }
 /** Message du salon général. src « l » = écrit sur cet appareil ; « n » = salon public en ligne (signé, empreinte fp). */
-export interface RoomMsg { id: string; t: string; n: string; d: string | null; fp: string; src: 'l' | 'n'; c: string; bad?: boolean; from?: string }
+export interface RoomMsg { id: string; t: string; n: string; d: string | null; fp: string; src: 'l' | 'n'; c: string; bad?: boolean; from?: string; /** date de la dernière modification (horodatage de l'auteur) */ e?: string }
 interface Db {
   v: 1
   seq: number
@@ -79,6 +79,8 @@ interface Db {
   room: RoomMsg[]
   roomKeys: Record<string, string>
   roomCursor: Record<string, number>
+  /** Messages du salon supprimés par leur auteur, « id|empreinte » (pour ne pas les recréer si le message d'origine arrive après). */
+  roomDel: string[]
 }
 
 export interface OutgoingFile { blob: File; type: Sniffed }
@@ -88,7 +90,7 @@ const KEY = 'cdp.local.v1'
 const ACTIVE_KEY = 'cdp.local.active'
 const DB_NAME = 'cdp-local-media'
 
-const fresh = (): Db => ({ v: 1, seq: 1, last: null, retired: [], people: {}, convs: [], messages: [], blocks: [], requests: [], reports: [], help: [], netreq: [], outbox: [], seenNet: [], relay: null, cursor: {}, room: [], roomKeys: {}, roomCursor: {} })
+const fresh = (): Db => ({ v: 1, seq: 1, last: null, retired: [], people: {}, convs: [], messages: [], blocks: [], requests: [], reports: [], help: [], netreq: [], outbox: [], seenNet: [], relay: null, cursor: {}, room: [], roomKeys: {}, roomCursor: {}, roomDel: [] })
 function fail(code: string): never {
   throw new Error(code)
 }
@@ -115,7 +117,7 @@ function load(): Db {
     if (!raw) return fresh()
     const d = JSON.parse(raw) as Partial<Db>
     if (d && d.v === 1 && d.people && Array.isArray(d.convs) && Array.isArray(d.messages)) {
-      return { ...fresh(), ...d, retired: d.retired ?? [], blocks: d.blocks ?? [], requests: d.requests ?? [], reports: d.reports ?? [], help: d.help ?? [], netreq: d.netreq ?? [], outbox: d.outbox ?? [], seenNet: d.seenNet ?? [], relay: d.relay ?? null, cursor: d.cursor ?? {}, room: d.room ?? [], roomKeys: d.roomKeys ?? {}, roomCursor: d.roomCursor ?? {} } as Db
+      return { ...fresh(), ...d, retired: d.retired ?? [], blocks: d.blocks ?? [], requests: d.requests ?? [], reports: d.reports ?? [], help: d.help ?? [], netreq: d.netreq ?? [], outbox: d.outbox ?? [], seenNet: d.seenNet ?? [], relay: d.relay ?? null, cursor: d.cursor ?? {}, room: d.room ?? [], roomKeys: d.roomKeys ?? {}, roomCursor: d.roomCursor ?? {}, roomDel: d.roomDel ?? [] } as Db
     }
   } catch {
     /* données illisibles : on repart de zéro sans planter */
@@ -243,6 +245,7 @@ export function subscribeMessageChanges(cb: (c: MessageChange) => void): () => v
 }
 
 const TYPING_KEY = 'cdp.local.typing'
+const ROOM_TYPING_KEY = 'cdp.local.roomtyping'
 const TYPING_SHOWN_MS = 9000
 const typingUntil = new Map<string, number>()
 const typingListeners = new Set<() => void>()
@@ -315,6 +318,10 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key === TYPING_KEY && e.newValue) {
       onTypingFromStorage(e.newValue)
+      return
+    }
+    if (e.key === ROOM_TYPING_KEY && e.newValue) {
+      onRoomTypingFromStorage(e.newValue)
       return
     }
     if (e.key !== KEY) return
@@ -1798,7 +1805,10 @@ async function handleRoomEvent(profileId: string, ev: RelayEvent): Promise<void>
   } catch {
     return
   }
-  if (!m || typeof m !== 'object' || m.cdp !== 1 || m.t !== 'room') return
+  if (!m || typeof m !== 'object' || m.cdp !== 1) return
+  if (m.t === 'redit' || m.t === 'rdel') return handleRoomChange(m as Record<string, unknown>)
+  if (m.t === 'rtyp') return handleRoomTyping(ev, p, m as Record<string, unknown>)
+  if (m.t !== 'room') return
   if (typeof m.mid !== 'string' || !SAFE_ID.test(m.mid) || typeof m.n !== 'string' || !PUBLIC_ID.test(m.n)) return
   if (typeof m.d !== 'string' || m.d.length > 40 || typeof m.ts !== 'string' || typeof m.c !== 'string' || m.c.length > ROOM_MAX_CHARS || typeof m.s !== 'string') return
   const pk = cleanPublicKey(m.k)
@@ -1813,6 +1823,7 @@ async function handleRoomEvent(profileId: string, ev: RelayEvent): Promise<void>
   const fp = await keyFingerprint(pk)
   syncFromStorage()
   if (db.room.some((x) => x.id === m.mid)) return
+  if (db.roomDel.includes(`${m.mid}|${fp}`)) return // supprimé par son auteur avant que nous le recevions
   const known = db.roomKeys[m.n as string]
   let bad = false
   if (!known) db.roomKeys[m.n as string] = fp
@@ -1820,6 +1831,180 @@ async function handleRoomEvent(profileId: string, ev: RelayEvent): Promise<void>
   db.room.push({ id: m.mid as string, t: new Date(ev.time * 1000).toISOString(), n: m.n as string, d: cleanRoomText(m.d as string) || null, fp, src: 'n', c: content, ...(bad ? { bad: true } : {}) })
   db.room.sort((a, b) => a.t.localeCompare(b.t))
   if (db.room.length > ROOM_KEEP) db.room.splice(0, db.room.length - ROOM_KEEP)
+  save()
+  emitRoom()
+}
+
+/** Modification ou suppression reçue : seul l'auteur (même clé que le message d'origine) peut agir. */
+async function handleRoomChange(m: Record<string, unknown>): Promise<void> {
+  const isEdit = m.t === 'redit'
+  if (typeof m.x !== 'string' || !SAFE_ID.test(m.x) || typeof m.n !== 'string' || !PUBLIC_ID.test(m.n) || typeof m.ts !== 'string' || typeof m.s !== 'string') return
+  if (isEdit && (typeof m.c !== 'string' || m.c.length > ROOM_MAX_CHARS)) return
+  const pk = cleanPublicKey(m.k)
+  if (!pk) return
+  const x = m.x
+  const text = isEdit ? roomEditSignedText({ x, n: m.n, ts: m.ts, c: m.c as string }) : roomDelSignedText({ x, n: m.n, ts: m.ts })
+  if (!(await verifyRoom(pk, text, m.s))) return
+  const claimed = Date.parse(m.ts)
+  if (Number.isNaN(claimed) || Math.abs(Date.now() - claimed) > 6 * 3600 * 1000 + 600000) return
+  const fp = await keyFingerprint(pk)
+  syncFromStorage()
+  const i = db.room.findIndex((r) => r.id === x)
+  const tomb = () => {
+    db.roomDel = [...db.roomDel.filter((k) => k !== `${x}|${fp}`), `${x}|${fp}`].slice(-500)
+  }
+  if (i < 0) {
+    if (!isEdit) {
+      tomb()
+      save()
+    }
+    return
+  }
+  const t = db.room[i]
+  if (t.src !== 'n' || t.fp !== fp || t.n !== m.n) return // pas l'auteur du message : ignoré
+  if (isEdit) {
+    const content = cleanRoomText(m.c as string)
+    if (!content) return
+    if (t.e && Date.parse(t.e) >= claimed) return // version plus ancienne ou identique (rejeu, écho)
+    t.c = content
+    t.e = m.ts as string
+  } else {
+    db.room.splice(i, 1)
+    tomb()
+  }
+  save()
+  emitRoom()
+}
+
+// ---- « est en train d'écrire » dans le salon (ceux de cet appareil + ceux du salon en ligne, signé)
+interface RoomTyper { label: string; n: string; mk: string; until: number }
+const roomTypers = new Map<string, RoomTyper>()
+function setRoomTyper(key: string, label: string, n: string, mk: string, ms: number): void {
+  roomTypers.set(key, { label, n, mk, until: Date.now() + ms })
+  emitRoom()
+}
+export interface RoomTypist { n: string; label: string }
+/** Personnes qui écrivent en ce moment (hors moi, hors personnes masquées, sans doublon). */
+export function getRoomTypers(): RoomTypist[] {
+  const now = Date.now()
+  const p = activeId ? db.people[activeId] : undefined
+  const muted = new Set(p?.mute ?? [])
+  const out = new Map<string, RoomTypist>()
+  roomTypers.forEach((v, k) => {
+    if (v.until <= now) roomTypers.delete(k)
+    else if (!muted.has(v.mk) && v.n !== p?.profile.public_id) out.set(v.n, { n: v.n, label: v.label || v.n })
+  })
+  return [...out.values()]
+}
+function onRoomTypingFromStorage(raw: string): void {
+  try {
+    const d = JSON.parse(raw) as { f?: unknown; n?: unknown; d?: unknown; t?: unknown }
+    if (!activeId || typeof d.f !== 'string' || d.f === activeId || typeof d.n !== 'string' || !PUBLIC_ID.test(d.n) || typeof d.t !== 'number' || Date.now() - d.t > 15000) return
+    const label = typeof d.d === 'string' ? cleanRoomText(d.d).slice(0, 40) : ''
+    setRoomTyper(`l:${d.f}`, label, d.n, `${d.n}|`, 6000)
+  } catch { /* indicateur facultatif */ }
+}
+async function handleRoomTyping(ev: RelayEvent, p: Person, m: Record<string, unknown>): Promise<void> {
+  if (Date.now() / 1000 - ev.time > 20) return // vieil événement rattrapé : on n'affiche pas
+  if (typeof m.n !== 'string' || !PUBLIC_ID.test(m.n) || typeof m.d !== 'string' || m.d.length > 40 || typeof m.ts !== 'string' || typeof m.s !== 'string') return
+  const pk = cleanPublicKey(m.k)
+  if (!pk || !(await verifyRoom(pk, roomTypSignedText({ n: m.n, d: m.d, ts: m.ts }), m.s))) return
+  const claimed = Date.parse(m.ts)
+  if (Number.isNaN(claimed) || Math.abs(Date.now() - claimed) > 120000) return
+  const fp = await keyFingerprint(pk)
+  if (p.fp && fp === p.fp) return // c'est moi
+  const known = db.roomKeys[m.n]
+  if (known && known !== fp) return // autre clé que d'habitude pour ce numéro : on n'affiche pas
+  setRoomTyper(`n:${m.n}|${fp}`, cleanRoomText(m.d), m.n, `${m.n}|${fp}`, 9000)
+}
+const roomTypingAt = new Map<string, number>()
+/** « J'écris » : sur cet appareil au plus toutes les 3 s ; en ligne (message signé) au plus toutes les 8 s. Désactivable (Paramètres › Compte). Jamais d'erreur visible. */
+export function sendRoomTyping(): void {
+  const my = activeId ? db.people[activeId] : undefined
+  if (!my || my.remote || my.notyp || !rulesOk(my)) return
+  const now = Date.now()
+  const id = my.profile.id
+  const name = cleanRoomText(my.profile.display_name ?? '').slice(0, 40)
+  if (now - (roomTypingAt.get(`${id}|l`) ?? 0) >= 3000) {
+    roomTypingAt.set(`${id}|l`, now)
+    try {
+      window.localStorage.setItem(ROOM_TYPING_KEY, JSON.stringify({ f: id, n: my.profile.public_id, d: name, t: now, r: Math.random() }))
+    } catch { /* ignoré */ }
+  }
+  const sk = my.sk
+  if (my.room && my.online && sk && relayStatus === 'online' && now - (roomTypingAt.get(`${id}|n`) ?? 0) >= 8000) {
+    roomTypingAt.set(`${id}|n`, now)
+    const fields = { n: my.profile.public_id, d: name, ts: nowIso() }
+    void (async () => {
+      try {
+        const sig = await signRoom(sk.priv, roomTypSignedText(fields))
+        const k = { kty: sk.pub.kty, crv: sk.pub.crv, x: sk.pub.x, y: sk.pub.y }
+        await publish(getRelay(), ROOM_TOPIC, JSON.stringify({ cdp: 1, t: 'rtyp', mid: newId(), ...fields, k, s: sig }))
+      } catch { /* l'indicateur est facultatif */ }
+    })()
+  }
+}
+
+const roomActAt = new Map<string, number>()
+function ownRoomMessage(my: Person, id: string): RoomMsg {
+  const msg = db.room.find((x) => x.id === id)
+  if (!msg) fail('room_message_gone')
+  const mine = msg.src === 'l' ? msg.from === my.profile.id : Boolean(my.fp) && msg.fp === my.fp && msg.n === my.profile.public_id
+  if (!mine) fail('not_your_message')
+  if (msg.src === 'n' && !(my.room && my.online && my.sk)) fail('online_off')
+  return msg
+}
+function signKeyOf(my: Person): { k: JsonWebKey; priv: JsonWebKey } {
+  const sk = my.sk as NonNullable<Person['sk']>
+  return { k: { kty: sk.pub.kty, crv: sk.pub.crv, x: sk.pub.x, y: sk.pub.y }, priv: sk.priv }
+}
+
+/** Modifie un de SES messages du salon (sur cet appareil, ou en ligne : message signé par la même clé). */
+export async function editRoomMessage(id: string, text: string): Promise<void> {
+  const my = me()
+  if (!rulesOk(my)) fail('rules_required')
+  const msg = ownRoomMessage(my, id)
+  const content = cleanRoomText(text)
+  if (!content) fail('empty_message')
+  if (content.length > ROOM_MAX_CHARS) fail('message_too_long')
+  if (content === msg.c) return
+  const now = Date.now()
+  if (now - (roomActAt.get(my.profile.id) ?? 0) < 1000) fail('rate_limited')
+  let e = nowIso()
+  if (msg.src === 'n') {
+    const { k, priv } = signKeyOf(my)
+    const fields = { x: id, n: my.profile.public_id, ts: e, c: content }
+    const s = await signRoom(priv, roomEditSignedText(fields))
+    await publish(getRelay(), ROOM_TOPIC, JSON.stringify({ cdp: 1, t: 'redit', mid: newId(), ...fields, k, s })) // erreur claire si le relais est injoignable : rien n'est modifié en silence
+  }
+  roomActAt.set(my.profile.id, now)
+  syncFromStorage()
+  const cur = db.room.find((x) => x.id === id)
+  if (!cur) fail('room_message_gone')
+  if (cur.e && Date.parse(cur.e) >= Date.parse(e)) e = new Date(Date.parse(cur.e) + 1).toISOString()
+  cur.c = content
+  cur.e = e
+  save()
+  emitRoom()
+}
+
+/** Supprime un de SES messages du salon. En ligne, la suppression part, signée : elle s'applique chez ceux qui sont (ou seront) connectés ; ceux qui l'ont déjà lu l'ont lu. */
+export async function deleteRoomMessage(id: string): Promise<void> {
+  const my = me()
+  const msg = ownRoomMessage(my, id)
+  const now = Date.now()
+  if (now - (roomActAt.get(my.profile.id) ?? 0) < 1000) fail('rate_limited')
+  if (msg.src === 'n') {
+    const { k, priv } = signKeyOf(my)
+    const fields = { x: id, n: my.profile.public_id, ts: nowIso() }
+    const s = await signRoom(priv, roomDelSignedText(fields))
+    await publish(getRelay(), ROOM_TOPIC, JSON.stringify({ cdp: 1, t: 'rdel', mid: newId(), ...fields, k, s }))
+    db.roomDel = [...db.roomDel.filter((x) => x !== `${id}|${msg.fp}`), `${id}|${msg.fp}`].slice(-500)
+  }
+  roomActAt.set(my.profile.id, now)
+  syncFromStorage()
+  const i = db.room.findIndex((x) => x.id === id)
+  if (i >= 0) db.room.splice(i, 1)
   save()
   emitRoom()
 }
