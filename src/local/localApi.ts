@@ -12,12 +12,33 @@ import type {
 } from '../types.ts'
 import { CATEGORIES, LIMITS, RULES_VERSION } from '../lib/config.ts'
 import { sniffType, type Sniffed } from '../lib/files.ts'
+import {
+  DEFAULT_RELAY, cleanPublicKey, decryptText, deriveChannel, encryptText, genKeyPair, mailboxTopic, normalizeRelay, publish, subscribe, verificationCode,
+  type Channel, type KeyPair, type RelayEvent, type RelayStatus,
+} from './online.ts'
 
 // ---------------------------------------------------------------- Types internes
 /** remote = personne d'un AUTRE appareil, ajoutée par code de partage : elle n'a pas de session ici. */
-interface Person { n: number; profile: Profile; settings: Settings; remote?: boolean }
-interface Conv { id: string; a: string; b: string; created_at: string; archived: Record<string, boolean>; read_at: Record<string, string> }
-interface ContactReq { id: string; from: string; to: string; status: 'pending' | 'accepted' | 'refused'; created_at: string; responded_at: string | null; seen_by_from?: boolean }
+interface Person {
+  n: number
+  profile: Profile
+  settings: Settings
+  remote?: boolean
+  /** Mode en ligne activé pour ce profil (profils de CET appareil seulement). */
+  online?: boolean
+  /** Clés ECDH du profil (créées à la première activation du mode en ligne). */
+  keys?: KeyPair
+  /** Personne qui m'a écrit en ligne et que je n'ai pas encore acceptée : invisible dans la recherche et les contacts. */
+  pend?: boolean
+  /** Clé publique de ce contact en ligne. */
+  pk?: JsonWebKey
+}
+interface Conv { id: string; a: string; b: string; created_at: string; archived: Record<string, boolean>; read_at: Record<string, string>; ch?: Channel }
+interface ContactReq { id: string; from: string; to: string; status: 'pending' | 'accepted' | 'refused'; created_at: string; responded_at: string | null; seen_by_from?: boolean; net?: { mid: string; pk: JsonWebKey } }
+/** Demande d'ajout que J'AI envoyée en ligne à un numéro (on ne connaît pas encore la personne). */
+interface NetReq { id: string; local: string; to_public_id: string; created_at: string; status: 'pending' | 'accepted' | 'refused'; responded_at: string | null; seen_by_from?: boolean; person?: string }
+/** Envois en attente de connexion : un message ou une réponse n'est jamais perdu en silence. */
+interface Outbox { id: string; profile: string; topic: string; body: string; msg?: string }
 interface BlockRow { blocker_id: string; blocked_id: string; created_at: string }
 interface HelpRow { id: string; author_id: string; title: string; description: string; category: string; status: HelpStatus; image_path: string | null; urgent?: boolean; created_at: string }
 interface Db {
@@ -33,6 +54,14 @@ interface Db {
   requests: ContactReq[]
   reports: ReportRow[]
   help: HelpRow[]
+  netreq: NetReq[]
+  outbox: Outbox[]
+  /** Identifiants des messages en ligne déjà traités (le relais peut renvoyer les mêmes). */
+  seenNet: string[]
+  /** Adresse d'un relais personnalisé (null = relais par défaut). */
+  relay: string | null
+  /** Dernier message reçu du relais, par profil (secondes). */
+  cursor: Record<string, number>
 }
 
 export interface OutgoingFile { blob: File; type: Sniffed }
@@ -42,7 +71,7 @@ const KEY = 'cdp.local.v1'
 const ACTIVE_KEY = 'cdp.local.active'
 const DB_NAME = 'cdp-local-media'
 
-const fresh = (): Db => ({ v: 1, seq: 1, last: null, retired: [], people: {}, convs: [], messages: [], blocks: [], requests: [], reports: [], help: [] })
+const fresh = (): Db => ({ v: 1, seq: 1, last: null, retired: [], people: {}, convs: [], messages: [], blocks: [], requests: [], reports: [], help: [], netreq: [], outbox: [], seenNet: [], relay: null, cursor: {} })
 function fail(code: string): never {
   throw new Error(code)
 }
@@ -69,7 +98,7 @@ function load(): Db {
     if (!raw) return fresh()
     const d = JSON.parse(raw) as Partial<Db>
     if (d && d.v === 1 && d.people && Array.isArray(d.convs) && Array.isArray(d.messages)) {
-      return { ...fresh(), ...d, retired: d.retired ?? [], blocks: d.blocks ?? [], requests: d.requests ?? [], reports: d.reports ?? [], help: d.help ?? [] } as Db
+      return { ...fresh(), ...d, retired: d.retired ?? [], blocks: d.blocks ?? [], requests: d.requests ?? [], reports: d.reports ?? [], help: d.help ?? [], netreq: d.netreq ?? [], outbox: d.outbox ?? [], seenNet: d.seenNet ?? [], relay: d.relay ?? null, cursor: d.cursor ?? {} } as Db
     }
   } catch {
     /* données illisibles : on repart de zéro sans planter */
@@ -169,6 +198,7 @@ function setActive(id: string | null): void {
     if (id) window.sessionStorage.setItem(ACTIVE_KEY, id)
     else window.sessionStorage.removeItem(ACTIVE_KEY)
   } catch { /* ignoré */ }
+  void syncOnline()
 }
 
 type Sess = { user: { id: string; email: string | null } } | null
@@ -198,6 +228,7 @@ if (typeof window !== 'undefined') {
       emitAuth()
     }
     db.messages.filter((m) => !known.has(m.id)).forEach(emitMessage)
+    void syncOnline()
   })
 }
 
@@ -283,6 +314,7 @@ export function useLocalProfile(id: string): void {
 
 export function wipeAllLocalData(): void {
   db = fresh()
+  stopOnlineNow()
   lastTs = 0
   try { window.localStorage.removeItem(KEY) } catch { /* ignoré */ }
   memoryCopy = null
@@ -403,13 +435,13 @@ export async function searchProfiles(query: string): Promise<SearchResult[]> {
   if (m) {
     const num = Number(m[1])
     return Object.values(db.people)
-      .filter((p) => p.n === num && (p.profile.id === my.profile.id || p.settings.searchable) && visible(p))
+      .filter((p) => !p.pend && p.n === num && (p.profile.id === my.profile.id || p.settings.searchable) && visible(p))
       .map(toResult)
   }
   const q = normName((query ?? '').replace(/^\s*user\s*#?/i, ''))
   if (q.length < 2) return []
   return Object.values(db.people)
-    .filter((p) => p.profile.id !== my.profile.id && p.settings.searchable && visible(p) && p.profile.display_name)
+    .filter((p) => !p.pend && p.profile.id !== my.profile.id && p.settings.searchable && visible(p) && p.profile.display_name)
     .map((p) => ({ p, name: normName(p.profile.display_name as string) }))
     .filter((x) => x.name.includes(q))
     .sort((a, b) => Number(b.name === q) - Number(a.name === q) || Number(b.name.startsWith(q)) - Number(a.name.startsWith(q)) || a.p.n - b.p.n)
@@ -468,7 +500,7 @@ export async function startConversation(otherId: string): Promise<string> {
     return found.id
   }
   // Personne de CET appareil : il faut d'abord une demande d'ajout ACCEPTÉE (les contacts d'un autre appareil sont déjà choisis par code).
-  if (!other.remote) {
+  if (!other.remote || other.pend) {
     if (sendContactRequest(otherId) !== 'accepted') fail('request_sent')
     const made = db.convs.find((c) => memberOf(c, my.profile.id) && memberOf(c, otherId))
     if (made) return made.id
@@ -518,6 +550,7 @@ export async function sendMessage(p: { conversationId: string; content: string; 
   if (content.length > LIMITS.messageChars) fail('message_too_long')
   const otherId = c.a === my.profile.id ? c.b : c.a
   if (!db.people[otherId] || isBlocked(my.profile.id, otherId)) fail('contact_unavailable')
+  await chPending.get(c.id) // canal chiffré en cours de création (acceptation d'une demande en ligne)
   const attachments: Message['message_attachments'] = []
   let storedPath: string | null = null
   if (p.file) {
@@ -528,6 +561,8 @@ export async function sendMessage(p: { conversationId: string; content: string; 
     attachments.push({ id: newId(), storage_path: path, file_name: cleanName(p.file.blob.name), mime_type: p.file.type.mime, file_size: p.file.blob.size })
   }
   const msg: Message = { id: newId(), conversation_id: c.id, sender_id: my.profile.id, content, created_at: nextTs(), message_attachments: attachments }
+  const viaRelay = Boolean(db.people[otherId].remote && c.ch)
+  if (viaRelay) msg.net = attachments.length ? 'file' : 'queued'
   db.messages.push(msg)
   try {
     save()
@@ -537,6 +572,7 @@ export async function sendMessage(p: { conversationId: string; content: string; 
     throw e
   }
   emitMessage(msg)
+  if (viaRelay && !attachments.length) void netSend(my.profile.id, c.id, msg.id)
   return msg.id
 }
 
@@ -760,6 +796,9 @@ export async function deleteAccount(uid: string): Promise<void> {
   db.help = db.help.filter((h) => h.author_id !== uid)
   db.blocks = db.blocks.filter((b) => b.blocker_id !== uid && b.blocked_id !== uid)
   db.requests = db.requests.filter((r) => r.from !== uid && r.to !== uid)
+  db.netreq = db.netreq.filter((x) => x.local !== uid && x.person !== uid)
+  db.outbox = db.outbox.filter((o) => o.profile !== uid)
+  delete db.cursor[uid]
   db.reports = db.reports.filter((r) => r.reporter?.public_id !== db.people[uid].profile.public_id)
   if (!db.people[uid].remote) db.retired.push(db.people[uid].n)
   delete db.people[uid]
@@ -811,12 +850,14 @@ function parseCard(raw: unknown): Card {
 }
 
 /** Ajoute ou met à jour une personne d'un autre appareil. Refuse de remplacer un profil de CET appareil. */
-function upsertRemote(card: Card): Person {
+function upsertRemote(card: Card, bio = 'Contact ajouté par code (autre appareil)', pend = false): Person {
   const existing = db.people[card.id]
   if (existing && !existing.remote) fail('already_local')
   const n = Number(PUBLIC_ID.exec(card.public_id)?.[1] ?? 0)
-  const profile: Profile = { id: card.id, public_id: card.public_id, display_name: card.display_name, avatar_path: null, bio: 'Contact ajouté par code (autre appareil)', created_at: existing?.profile.created_at ?? nowIso() }
+  const profile: Profile = { id: card.id, public_id: card.public_id, display_name: card.display_name, avatar_path: null, bio, created_at: existing?.profile.created_at ?? nowIso() }
   const person: Person = { n, profile, settings: { ...defaultSettings(), rules_version: RULES_VERSION, rules_accepted_at: nowIso() }, remote: true }
+  if (pend) person.pend = true
+  if (existing?.pk) person.pk = existing.pk
   db.people[card.id] = person
   return person
 }
@@ -845,7 +886,7 @@ export function importShareCode(code: string): Profile {
 }
 
 export function listContacts(): Profile[] {
-  return Object.values(db.people).filter((p) => p.remote).sort((a, b) => a.n - b.n).map((p) => p.profile)
+  return Object.values(db.people).filter((p) => p.remote && !p.pend).sort((a, b) => a.n - b.n).map((p) => p.profile)
 }
 
 const messagePackage = (from: Profile, to: string) => ({ cdp: 'messages', v: 1, from: { id: from.id, public_id: from.public_id, display_name: from.display_name }, to })
@@ -965,7 +1006,7 @@ export function contactStatus(otherId: string): ContactStatus {
   if (otherId === my) return 'self'
   const other = db.people[otherId]
   if (!other) return 'none'
-  if (other.remote || db.convs.some((c) => memberOf(c, my) && memberOf(c, otherId))) return 'accepted'
+  if ((other.remote && !other.pend) || db.convs.some((c) => memberOf(c, my) && memberOf(c, otherId))) return 'accepted'
   const r = latestRequest(my, otherId)
   if (!r) return 'none'
   if (r.status === 'pending') return r.from === my ? 'pending_out' : 'pending_in'
@@ -994,10 +1035,7 @@ export function sendContactRequest(otherId: string): 'pending' | 'accepted' {
   if (st === 'refused') fail('request_refused_recently')
   if (st === 'pending_in') {
     const r = db.requests.find((x) => x.from === otherId && x.to === my.profile.id && x.status === 'pending') as ContactReq
-    r.status = 'accepted'
-    r.responded_at = nowIso()
-    ensureConversation(my.profile.id, otherId)
-    save()
+    respondContactRequest(r.id, true)
     return 'accepted'
   }
   if (db.requests.filter((r) => r.from === my.profile.id && r.status === 'pending').length >= 20) fail('rate_limited')
@@ -1012,7 +1050,23 @@ export function respondContactRequest(id: string, accept: boolean): void {
   const r = db.requests.find((x) => x.id === id && x.to === my && x.status === 'pending') ?? fail('target_not_found')
   r.status = accept ? 'accepted' : 'refused'
   r.responded_at = nowIso()
-  if (accept) ensureConversation(r.from, r.to)
+  const conv = accept ? ensureConversation(r.from, r.to) : null
+  const person = db.people[r.from]
+  if (r.net && person) {
+    const other = { id: r.from, public_id: person.profile.public_id }
+    // Demande reçue EN LIGNE : on répond par le relais (acceptation avec ma clé publique, ou refus).
+    if (accept) {
+      person.pend = false
+      person.pk = r.net.pk
+      person.profile.bio = 'Contact ajouté en ligne'
+    } else if (person.pend) {
+      delete db.people[r.from] // refusée et inconnue : on ne garde rien
+    }
+    save()
+    const task = netRespond(my, accept, r.net.mid, r.net.pk, other).catch(() => undefined)
+    if (conv) chPending.set(conv.id, task.finally(() => void chPending.delete(conv.id)))
+    return
+  }
   save()
 }
 
@@ -1028,15 +1082,404 @@ export function contactNotices(): ContactNotices {
   if (!my || !db.people[my]) return { incoming: [], answers: [], outgoing: [] }
   const prof = (id: string) => db.people[id]?.profile
   const incoming = db.requests.filter((r) => r.to === my && r.status === 'pending' && prof(r.from)).sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => ({ id: r.id, from: prof(r.from) as Profile, created_at: r.created_at }))
-  const answers = db.requests.filter((r) => r.from === my && r.status !== 'pending' && !r.seen_by_from && prof(r.to)).map((r) => ({ id: r.id, other: prof(r.to) as Profile, accepted: r.status === 'accepted' }))
-  const outgoing = db.requests.filter((r) => r.from === my && prof(r.to)).sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => ({ id: r.id, to: prof(r.to) as Profile, status: r.status, created_at: r.created_at }))
+  const netOf = (x: NetReq): Profile => (x.person && prof(x.person)) || { id: `net-${x.id}`, public_id: x.to_public_id, display_name: null, avatar_path: null, bio: null, created_at: x.created_at }
+  const mine = db.netreq.filter((x) => x.local === my)
+  const answers = [
+    ...db.requests.filter((r) => r.from === my && r.status !== 'pending' && !r.seen_by_from && prof(r.to)).map((r) => ({ id: r.id, other: prof(r.to) as Profile, accepted: r.status === 'accepted' })),
+    ...mine.filter((x) => x.status !== 'pending' && !x.seen_by_from).map((x) => ({ id: x.id, other: netOf(x), accepted: x.status === 'accepted' })),
+  ]
+  const outgoing = [
+    ...db.requests.filter((r) => r.from === my && prof(r.to)).map((r) => ({ id: r.id, to: prof(r.to) as Profile, status: r.status, created_at: r.created_at })),
+    ...mine.map((x) => ({ id: x.id, to: netOf(x), status: x.status, created_at: x.created_at })),
+  ].sort((a, b) => b.created_at.localeCompare(a.created_at))
   return { incoming, answers, outgoing }
 }
 
 export function markAnswerSeen(id: string): void {
-  const r = db.requests.find((x) => x.id === id && x.from === activeId)
+  const r = db.requests.find((x) => x.id === id && x.from === activeId) ?? db.netreq.find((x) => x.id === id && x.local === activeId)
   if (r) {
     r.seen_by_from = true
     save()
   }
+}
+
+// ================================================================ Mode EN LIGNE (relais public) — voir online.ts
+// Désactivé au départ. Rien ne sort de l'appareil tant que l'interrupteur « En ligne » n'est pas activé pour le profil.
+//  - demande d'ajout par numéro : publiée dans la boîte (publique) du numéro visé ;
+//  - acceptation : les deux appareils calculent un secret commun → sujet + clé de conversation ;
+//  - messages TEXTE : chiffrés (AES-GCM) puis publiés sur le sujet de la conversation. Images/vidéos : fichier d'échange.
+
+interface NetMsg { cdp?: unknown; t?: unknown; mid?: unknown; to?: unknown; from?: unknown; pk?: unknown; re?: unknown; iv?: unknown; ct?: unknown }
+
+let relayStatus: RelayStatus = 'off'
+let stopSub: (() => void) | null = null
+let subKey = ''
+let syncSeq = 0
+let subSeq = 0
+let chain: Promise<void> = Promise.resolve()
+const chPending = new Map<string, Promise<unknown>>()
+const onlineListeners = new Set<() => void>()
+const emitOnline = () => onlineListeners.forEach((cb) => cb())
+
+export function subscribeOnlineStatus(cb: () => void): () => void {
+  onlineListeners.add(cb)
+  return () => void onlineListeners.delete(cb)
+}
+
+export function getRelay(): string {
+  return (db.relay && normalizeRelay(db.relay)) || DEFAULT_RELAY
+}
+
+/** Change le relais (adresse https). Vide = relais par défaut. */
+export function setRelay(url: string): void {
+  const t = (url ?? '').trim()
+  const clean = t ? normalizeRelay(t) : DEFAULT_RELAY
+  if (!clean) fail('bad_relay')
+  db.relay = clean === DEFAULT_RELAY ? null : clean
+  save()
+  void syncOnline()
+}
+
+export interface OnlineInfo { enabled: boolean; status: RelayStatus; relay: string; custom: boolean; queued: number }
+
+export function getOnline(): OnlineInfo {
+  const p = activeId ? db.people[activeId] : undefined
+  const enabled = Boolean(p?.online)
+  return { enabled, status: enabled ? relayStatus : 'off', relay: getRelay(), custom: getRelay() !== DEFAULT_RELAY, queued: db.outbox.filter((o) => o.profile === activeId).length }
+}
+
+/** Active ou coupe le mode en ligne du profil actif. Activer crée les clés de chiffrement du profil (une seule fois). */
+export async function setOnline(enabled: boolean): Promise<void> {
+  const id = me().profile.id
+  if (enabled && !rulesOk(db.people[id])) fail('rules_required')
+  const keys = enabled && !db.people[id].keys ? await genKeyPair() : null
+  const p = db.people[id] ?? fail('not_authenticated')
+  p.online = enabled
+  if (keys && !p.keys) p.keys = keys
+  save()
+  await syncOnline()
+  if (enabled) void flushOutbox()
+}
+
+function stopOnlineNow(): void {
+  stopSub?.()
+  stopSub = null
+  subKey = ''
+  relayStatus = 'off'
+  emitOnline()
+}
+
+async function wantedTopics(profileId: string): Promise<string[]> {
+  const topics = [await mailboxTopic(db.people[profileId].profile.public_id)]
+  for (const c of db.convs) if (memberOf(c, profileId) && c.ch) topics.push(c.ch.topic)
+  return [...new Set(topics)]
+}
+
+/** Ouvre (ou ferme, ou met à jour) la connexion au relais selon le profil actif, l'interrupteur, le relais et les conversations. */
+async function syncOnline(): Promise<void> {
+  const seq = ++syncSeq
+  const id = activeId
+  const p = id ? db.people[id] : undefined
+  if (!id || !p || p.remote || !p.online) {
+    if (stopSub || relayStatus !== 'off') stopOnlineNow()
+    return
+  }
+  const topics = await wantedTopics(id)
+  if (seq !== syncSeq) return
+  const relay = getRelay()
+  const key = [id, relay, ...topics].join('|')
+  if (key === subKey && stopSub) return
+  stopSub?.()
+  subKey = key
+  relayStatus = 'connecting'
+  emitOnline()
+  const mine = ++subSeq
+  const cursor = db.cursor[id]
+  stopSub = subscribe({
+    relay,
+    topics,
+    since: cursor ? Math.max(0, cursor - 30) : 'all',
+    onStatus: (s) => {
+      if (mine !== subSeq) return
+      relayStatus = s
+      emitOnline()
+      if (s === 'online') void flushOutbox()
+    },
+    onEvent: (ev) => {
+      if (mine !== subSeq) return
+      chain = chain.then(() => handleRelayEvent(id, ev)).catch(() => undefined)
+    },
+  })
+}
+
+/** Un autre onglet a peut-être écrit : on repart de ce qui est enregistré. */
+function syncFromStorage(): void {
+  const raw = read()
+  if (raw && raw !== memoryCopy) db = load()
+}
+
+function setNet(msgId: string, state: NonNullable<Message['net']>): void {
+  const m = db.messages.find((x) => x.id === msgId)
+  if (m && m.net !== state) {
+    m.net = state
+    save()
+  }
+}
+
+/** Publie tout de suite ; si le relais est injoignable, met en file d'attente (la personne voit « en attente »). */
+async function post(profileId: string, topic: string, body: string, msgId?: string): Promise<void> {
+  if (db.people[profileId]?.online) {
+    try {
+      await publish(getRelay(), topic, body)
+      if (msgId) setNet(msgId, 'sent')
+      return
+    } catch (e) {
+      if ((e as Error).message === 'online_too_long') {
+        if (msgId) setNet(msgId, 'failed')
+        throw e
+      }
+    }
+  }
+  db.outbox.push({ id: newId(), profile: profileId, topic, body, msg: msgId })
+  if (msgId) setNet(msgId, 'queued')
+  else save()
+}
+
+let flushing = false
+async function flushOutbox(): Promise<void> {
+  const id = activeId
+  if (flushing || !id || !db.people[id]?.online) return
+  flushing = true
+  try {
+    for (const item of db.outbox.filter((o) => o.profile === id)) {
+      try {
+        await publish(getRelay(), item.topic, item.body)
+      } catch (e) {
+        if ((e as Error).message !== 'online_too_long') break
+        if (item.msg) setNet(item.msg, 'failed')
+      }
+      db.outbox = db.outbox.filter((o) => o.id !== item.id)
+      if (item.msg) setNet(item.msg, 'sent')
+      else save()
+    }
+  } finally {
+    flushing = false
+  }
+}
+
+async function netSend(profileId: string, convId: string, msgId: string): Promise<void> {
+  const c = db.convs.find((x) => x.id === convId)
+  const m = db.messages.find((x) => x.id === msgId)
+  if (!c?.ch || !m) return
+  try {
+    const { iv, ct } = await encryptText(c.ch.key, c.ch.topic, JSON.stringify({ id: m.id, c: m.content, s: profileId }))
+    await post(profileId, c.ch.topic, JSON.stringify({ cdp: 1, t: 'msg', mid: m.id, iv, ct }), m.id)
+  } catch {
+    setNet(msgId, 'failed')
+  }
+}
+
+async function netRespond(profileId: string, accept: boolean, mid: string, pk: JsonWebKey, other: { id: string; public_id: string }): Promise<void> {
+  const mine = db.people[profileId]
+  if (!mine) return
+  const topic = await mailboxTopic(other.public_id)
+  const from = { id: profileId, public_id: mine.profile.public_id, display_name: mine.profile.display_name }
+  if (!accept) {
+    await post(profileId, topic, JSON.stringify({ cdp: 1, t: 'ref', mid: newId(), re: mid, to: other.public_id, from }))
+    return
+  }
+  const keys = mine.keys ?? (await genKeyPair())
+  const ch = await deriveChannel(keys.priv, pk, profileId, other.id)
+  const p = db.people[profileId]
+  if (p && !p.keys) p.keys = keys
+  const conv = ensureConversation(profileId, other.id)
+  conv.ch = ch
+  save()
+  await syncOnline()
+  await post(profileId, topic, JSON.stringify({ cdp: 1, t: 'acc', mid: newId(), re: mid, to: other.public_id, from, pk: keys.pub }))
+}
+
+/** « User#42 », « 42 », « #0042 »… → « User#0042 » (ou null si ça n'y ressemble pas). */
+export function onlineTarget(query: string): string | null {
+  const m = /^\s*(?:user)?\s*#?\s*(\d{1,6})\s*$/i.exec(query ?? '')
+  return m ? publicIdOf(Number(m[1])) : null
+}
+
+/** Envoie une demande d'ajout EN LIGNE à un numéro. Échoue clairement si le relais est injoignable (pas de demande « fantôme »). */
+export async function sendOnlineRequest(query: string): Promise<void> {
+  const my = me()
+  const pid = onlineTarget(query) ?? fail('bad_target')
+  if (!rulesOk(my)) fail('rules_required')
+  if (!my.online) fail('online_off')
+  if (pid === my.profile.public_id) fail('contact_unavailable')
+  if (Object.values(db.people).some((p) => !p.remote && p.profile.public_id === pid)) fail('already_local')
+  const id = my.profile.id
+  const known = Object.values(db.people).find((p) => p.remote && !p.pend && p.profile.public_id === pid && db.convs.some((c) => memberOf(c, id) && memberOf(c, p.profile.id)))
+  if (known) fail('already_contact')
+  const mineReqs = db.netreq.filter((x) => x.local === id && x.to_public_id === pid)
+  if (mineReqs.some((x) => x.status === 'pending')) return
+  if (mineReqs.some((x) => x.status === 'refused' && Date.now() - new Date(x.responded_at ?? x.created_at).getTime() < REFUSAL_COOLDOWN_MS)) fail('request_refused_recently')
+  if (db.netreq.filter((x) => x.local === id && x.status === 'pending').length >= 20) fail('rate_limited')
+  const keys = my.keys ?? (await genKeyPair())
+  const p = db.people[id] ?? fail('not_authenticated')
+  if (!p.keys) p.keys = keys
+  const nr: NetReq = { id: newId(), local: id, to_public_id: pid, created_at: nowIso(), status: 'pending', responded_at: null }
+  const body = JSON.stringify({ cdp: 1, t: 'req', mid: nr.id, to: pid, from: { id, public_id: p.profile.public_id, display_name: p.profile.display_name }, pk: p.keys?.pub, ts: nr.created_at })
+  await publish(getRelay(), await mailboxTopic(pid), body)
+  db.netreq.push(nr)
+  save()
+}
+
+// ---- Réception
+async function handleRelayEvent(profileId: string, ev: RelayEvent): Promise<void> {
+  syncFromStorage()
+  const mine = db.people[profileId]
+  if (!mine || !mine.online || activeId !== profileId) return
+  let m: NetMsg
+  try {
+    m = JSON.parse(ev.message) as NetMsg
+  } catch {
+    return
+  }
+  if (!m || typeof m !== 'object' || m.cdp !== 1 || typeof m.t !== 'string' || typeof m.mid !== 'string' || !SAFE_ID.test(m.mid)) return
+  const mid = m.mid
+  let moved = (db.cursor[profileId] ?? 0) < ev.time
+  if (moved) db.cursor[profileId] = ev.time
+  if (!db.seenNet.includes(mid)) {
+    const mailbox = await mailboxTopic(mine.profile.public_id)
+    let done = false
+    if (ev.topic === mailbox) {
+      if (m.t === 'req') done = onNetRequest(profileId, m, mid)
+      else if (m.t === 'acc') done = await onNetAccept(profileId, m)
+      else if (m.t === 'ref') done = onNetRefuse(profileId, m)
+    } else if (m.t === 'msg') {
+      done = await onNetMessage(profileId, ev.topic, m)
+    }
+    if (done) {
+      db.seenNet.push(mid)
+      if (db.seenNet.length > 800) db.seenNet.splice(0, db.seenNet.length - 800)
+      moved = true
+    }
+  }
+  if (moved) save()
+}
+
+function onNetRequest(profileId: string, m: NetMsg, mid: string): boolean {
+  const my = db.people[profileId]
+  if (m.to !== my.profile.public_id) return false
+  let card: Card
+  try {
+    card = parseCard(m.from)
+  } catch {
+    return false
+  }
+  const pk = cleanPublicKey(m.pk)
+  if (!pk || card.id === profileId) return false
+  const known = db.people[card.id]
+  if (known && !known.remote) return false // un profil de CET appareil : pas de demande en ligne
+  if (isBlocked(profileId, card.id)) return false
+  const waiting = db.requests.filter((r) => r.to === profileId && r.status === 'pending' && r.net)
+  if (waiting.length >= 30 || waiting.some((r) => r.from === card.id)) return false
+  if (!known) upsertRemote(card, 'Demande reçue en ligne', true)
+  db.requests.push({ id: newId(), from: card.id, to: profileId, status: 'pending', created_at: nowIso(), responded_at: null, net: { mid, pk } })
+  return true
+}
+
+async function onNetAccept(profileId: string, m: NetMsg): Promise<boolean> {
+  const nr = db.netreq.find((x) => x.id === m.re && x.local === profileId && x.status === 'pending')
+  const keys = db.people[profileId]?.keys
+  if (!nr || !keys) return false
+  let card: Card
+  try {
+    card = parseCard(m.from)
+  } catch {
+    return false
+  }
+  const pk = cleanPublicKey(m.pk)
+  if (!pk || card.public_id !== nr.to_public_id || card.id === profileId) return false
+  const known = db.people[card.id]
+  if (known && !known.remote) return false
+  let ch: Channel
+  try {
+    ch = await deriveChannel(keys.priv, pk, profileId, card.id)
+  } catch {
+    return false
+  }
+  syncFromStorage()
+  const again = db.netreq.find((x) => x.id === nr.id && x.status === 'pending')
+  if (!again) return false
+  const person = upsertRemote(card, 'Contact ajouté en ligne')
+  person.pk = pk
+  ensureConversation(profileId, card.id).ch = ch
+  again.status = 'accepted'
+  again.responded_at = nowIso()
+  again.person = card.id
+  save()
+  void syncOnline()
+  return true
+}
+
+function onNetRefuse(profileId: string, m: NetMsg): boolean {
+  const nr = db.netreq.find((x) => x.id === m.re && x.local === profileId && x.status === 'pending')
+  const from = m.from as { public_id?: unknown } | null
+  if (!nr || !from || from.public_id !== nr.to_public_id) return false
+  nr.status = 'refused'
+  nr.responded_at = nowIso()
+  return true
+}
+
+async function onNetMessage(profileId: string, topic: string, m: NetMsg): Promise<boolean> {
+  const conv = db.convs.find((c) => c.ch?.topic === topic && memberOf(c, profileId))
+  if (!conv?.ch || typeof m.iv !== 'string' || typeof m.ct !== 'string') return false
+  const otherId = conv.a === profileId ? conv.b : conv.a
+  if (isBlocked(profileId, otherId) || !db.people[otherId]) return false
+  let body: { id?: unknown; c?: unknown; s?: unknown }
+  try {
+    body = JSON.parse(await decryptText(conv.ch.key, conv.ch.topic, m.iv, m.ct))
+  } catch {
+    return false
+  }
+  syncFromStorage()
+  if (!body || typeof body.id !== 'string' || !SAFE_ID.test(body.id) || body.id !== m.mid || body.s !== otherId || typeof body.c !== 'string') return false
+  if (db.messages.some((x) => x.id === body.id)) return true
+  const content = body.c.slice(0, LIMITS.messageChars).trim()
+  if (!content) return false
+  const live = db.convs.find((c) => c.id === conv.id)
+  if (!live) return false
+  live.archived[profileId] = false
+  const msg: Message = { id: body.id, conversation_id: conv.id, sender_id: otherId, content, created_at: nextTs(), message_attachments: [] }
+  db.messages.push(msg)
+  save()
+  emitMessage(msg)
+  return true
+}
+
+// ---- Informations pour l'interface
+export interface ConversationLink { mode: 'local' | 'file' | 'online'; online: boolean }
+
+/** Comment cette conversation circule : entre profils de cet appareil, par fichier, ou en ligne (chiffrée). */
+export function conversationLink(conversationId: string): ConversationLink {
+  const my = activeId
+  const c = db.convs.find((x) => x.id === conversationId)
+  if (!my || !c || !memberOf(c, my)) return { mode: 'local', online: false }
+  const other = db.people[c.a === my ? c.b : c.a]
+  if (!other?.remote) return { mode: 'local', online: false }
+  return { mode: c.ch ? 'online' : 'file', online: Boolean(db.people[my]?.online) }
+}
+
+/** Code à 8 chiffres identique chez les deux personnes : à comparer par un autre moyen pour être sûr de parler à la bonne. */
+export async function conversationVerification(conversationId: string): Promise<string | null> {
+  const c = db.convs.find((x) => x.id === conversationId)
+  return c?.ch ? verificationCode(c.ch) : null
+}
+
+export function messageNet(id: string): Message['net'] | undefined {
+  return db.messages.find((m) => m.id === id)?.net
+}
+
+if (typeof window !== 'undefined') {
+  window.setInterval(() => {
+    if (relayStatus === 'online') void flushOutbox()
+  }, 20000)
+  void syncOnline()
 }

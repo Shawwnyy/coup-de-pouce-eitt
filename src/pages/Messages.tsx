@@ -15,6 +15,7 @@ import { previewUrl, validateFile } from '../lib/files'
 import { dayKey, displayName, formatBytes, formatDateTime, formatDayLabel, formatShort, formatTime } from '../lib/format'
 import { useAsync, useCopy, useDocumentTitle } from '../lib/hooks'
 import { LOCAL } from '../lib/mode'
+import { NetBadge, OnlineConvNotice } from '../local/OnlineBar'
 import { CHAT_POLICY } from '../lib/policies'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from '../lib/router'
 import type { ConversationSummary, Message } from '../types'
@@ -100,6 +101,7 @@ function MessageItem({ m, mine, peerName, onReport, onDelete }: { m: Message; mi
         {m.message_attachments.map((a) => <MediaAttachment key={a.id} att={a} />)}
         <div className="bubble-meta">
           <time dateTime={m.created_at} title={formatDateTime(m.created_at)}>{formatTime(m.created_at)}</time>
+          {LOCAL && mine && <NetBadge id={m.id} />}
           <Menu label="Actions sur ce message" align={mine ? 'right' : 'left'}>
             {m.content && <CopyItem text={m.content} />}
             {!mine && <button type="button" className="menu-item" onClick={onReport}><Icon name="flag" size={16} /> Signaler ce message</button>}
@@ -461,6 +463,7 @@ function Thread({ id }: { id: string }) {
         </ul>
       </div>
 
+      {LOCAL && <OnlineConvNotice conversationId={id} />}
       {blocked.data ? (
         <div className="composer-blocked">
           <Icon name="block" /> <span>Vous avez bloqué {peer.data.public_id}. Vous ne pouvez plus vous écrire.</span>

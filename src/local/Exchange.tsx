@@ -57,8 +57,8 @@ export function ShareCodeCard({ onProfile = false }: { onProfile?: boolean }) {
     <section className={onProfile ? 'share-card stack' : 'card stack'} aria-labelledby={onProfile ? 'pf-code' : 'ex-1'}>
       <h2 id={onProfile ? 'pf-code' : 'ex-1'}>{onProfile ? 'Mon code de partage' : '1. Mon code de partage'}</h2>
       <p>
-        Donnez ce code à une personne qui utilise Coup de Pouce sur un autre appareil : elle pourra vous retrouver par votre nom ou votre numéro {profile.public_id}.
-        Il ne contient pas de mot de passe ni de message.
+        Pour les échanges hors ligne : donnez ce code à une personne qui utilise Coup de Pouce sur un autre appareil, elle pourra vous retrouver par votre nom ou votre numéro {profile.public_id}.
+        Il ne contient pas de mot de passe ni de message. <strong>En ligne</strong>, ce code est inutile : votre identifiant {profile.public_id} suffit pour qu’on vous ajoute.
       </p>
       <textarea className="input mono" readOnly rows={3} value={myCode} aria-label="Mon code de partage" onFocus={(e) => e.currentTarget.select()} />
       <div className="row">
@@ -137,8 +137,9 @@ export function ExchangePage() {
         <p className="muted">Pour retrouver quelqu’un qui utilise Coup de Pouce sur un autre ordinateur ou téléphone.</p>
       </header>
       <Alert kind="info" title="Pourquoi un code ?">
-        Sans serveur, un site ne peut pas voir les autres appareils : personne ne peut être « trouvé » automatiquement. On s’échange donc une fois un code (pour se
-        retrouver par nom ou numéro), puis des fichiers de messages envoyés par vos propres moyens. Ce n’est ni instantané ni automatique.
+        Sans serveur, un site ne peut pas voir les autres appareils : personne ne peut être « trouvé » automatiquement. Le plus simple est le <strong>mode En ligne</strong> (interrupteur en haut de page) :
+        on s’ajoute avec le User# et on s’écrit en texte chiffré. Hors ligne, on s’échange une fois un code (pour se retrouver par nom ou numéro), puis des fichiers de messages envoyés par vos propres moyens :
+        ce n’est ni instantané ni automatique.
       </Alert>
 
       <ShareCodeCard />

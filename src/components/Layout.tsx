@@ -4,6 +4,7 @@ import { useNotify } from '../context/NotifyContext'
 import { EITT_URL } from '../lib/config'
 import { LOCAL } from '../lib/mode'
 import { ContactPopups } from '../local/Contacts'
+import { OnlineBar } from '../local/OnlineBar'
 import { RedAlertBanner } from '../local/RedAlerts'
 import { Link, NavLink, useNavigate } from '../lib/router'
 import { isConfigured } from '../lib/supabase'
@@ -94,10 +95,11 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {LOCAL && (
+      {LOCAL && authed && <OnlineBar />}
+      {LOCAL && !authed && (
         <div className="local-banner" role="note">
           <Icon name="info" size={16} />
-          <span>Version locale : tout est gardé dans ce navigateur. Pas de chat automatique entre appareils (échange par code et fichier) ni de modération.</span>
+          <span>Version locale : tout est gardé dans ce navigateur. Un mode « en ligne » facultatif permet ensuite d’ajouter quelqu’un d’un autre appareil avec son User#. Pas de modération.</span>
         </div>
       )}
       {LOCAL && authed && <RedAlertBanner />}

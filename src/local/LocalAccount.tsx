@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { downloadJson } from '../lib/download'
 import { friendlyError } from '../lib/errors'
 import { useNavigate } from '../lib/router'
+import { OnlineSettingsCard } from './OnlineBar'
 import { deleteAccount, exportMyData, wipeAllLocalData } from './localApi'
 
 /** Remplace la section « Compte » : il n'y a ni e-mail ni mot de passe en version locale. */
@@ -24,6 +25,7 @@ export function LocalAccountSection() {
 
   return (
     <div className="stack">
+      <OnlineSettingsCard />
       <div className="card stack">
         <h2>Profil local {profile?.public_id}</h2>
         <p>Ce profil existe uniquement dans ce navigateur : pas d’e-mail, pas de mot de passe. Pour changer de profil, créer ou supprimer un profil, ouvrez la liste des profils.</p>
