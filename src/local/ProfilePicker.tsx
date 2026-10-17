@@ -24,6 +24,7 @@ export function ProfilePicker() {
   const newId = publicIdOf(num)
   const [name, setName] = useState('')
   const [accept, setAccept] = useState(false)
+  const [goOnline, setGoOnline] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -42,7 +43,7 @@ export function ProfilePicker() {
     e.preventDefault()
     setError(null)
     try {
-      createLocalProfile({ displayName: name, acceptRules: accept, number: num })
+      createLocalProfile({ displayName: name, acceptRules: accept, number: num, online: goOnline })
       navigate(next, { replace: true })
     } catch (err) {
       setError(friendlyError(err, 'Impossible d’enregistrer le profil dans ce navigateur.'))
@@ -143,9 +144,16 @@ export function ProfilePicker() {
           <input id="new-name" className="input" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} autoComplete="off" />
         </Field>
         <label className="check">
-          <input type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} />
+          <input id="accept-rules" type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} />
           <span>
             J’ai lu et j’accepte <Link to="/regles">les règles de la communauté</Link> (le lien s’ouvre dans cette fenêtre) et la page <Link to="/confidentialite">Confidentialité</Link>.
+          </span>
+        </label>
+        <label className="check">
+          <input id="go-online" type="checkbox" checked={goOnline} onChange={(e) => setGoOnline(e.target.checked)} />
+          <span>
+            <strong>Recevoir les demandes des autres appareils (mode en ligne, bêta).</strong> Votre profil écoute sa boîte de demandes sur un relais public : rien n’est publié tant que vous n’envoyez pas une demande ou un message.
+            Le relais voit votre adresse internet ; les messages texte sont chiffrés. Décochez pour rester 100 % hors ligne (modifiable à tout moment).
           </span>
         </label>
         <button type="submit" className="btn btn-primary btn-lg" disabled={!accept}>

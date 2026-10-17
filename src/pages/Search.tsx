@@ -8,56 +8,39 @@ import { useDocumentTitle } from '../lib/hooks'
 import { LOCAL } from '../lib/mode'
 import { Link, useSearchParams } from '../lib/router'
 import type { SearchResult } from '../types'
-import { importShareCode, onlineTarget, sendOnlineRequest } from '../local/localApi'
-import { useOnlineToggle } from '../local/OnlineBar'
+import { importShareCode, onlineRequestState, onlineTarget } from '../local/localApi'
+import { useOnline } from '../local/OnlineBar'
+import { RequestDialog } from '../local/RequestDialog'
 
 const FORMAT = /^\s*(user)?\s*#?\s*\d{1,9}\s*$/i
 
-/** Aucun profil de cet appareil avec ce numéro : on propose une demande d'ajout EN LIGNE (ou de passer en ligne). */
+/** Aucun profil de cet appareil avec ce numéro : une POP-UP propose d'envoyer la demande d'ajout EN LIGNE (et de passer en ligne au même clic). */
 function OnlineTargetCard({ target }: { target: string }) {
-  const { info, ask, dialog } = useOnlineToggle()
-  const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle')
-  const [err, setErr] = useState<string | null>(null)
+  useOnline() // se remet à jour toutes les 2 s
+  const pending = onlineRequestState(target) === 'pending'
+  const [open, setOpen] = useState(!pending)
+  const [sent, setSent] = useState(false)
   useEffect(() => {
-    setState('idle')
-    setErr(null)
+    setOpen(onlineRequestState(target) !== 'pending')
+    setSent(false)
   }, [target])
-  async function send() {
-    setState('sending')
-    setErr(null)
-    try {
-      await sendOnlineRequest(target)
-      setState('sent')
-    } catch (e) {
-      setErr(friendlyError(e))
-      setState('idle')
-    }
-  }
   return (
     <section className="card stack online-target" aria-label={`Ajouter ${target} en ligne`}>
       <h2 className="mono accent">{target}</h2>
-      {!info.enabled ? (
-        <>
-          <p>Aucun profil {target} sur cet appareil. Pour ajouter quelqu’un qui utilise Coup de Pouce sur un autre appareil, passez en ligne.</p>
-          <div className="row"><button type="button" className="btn btn-primary" onClick={ask}><Icon name="globe" size={18} /> Passer en ligne</button></div>
-        </>
-      ) : state === 'sent' ? (
+      {sent || pending ? (
         <Alert kind="success" title="Demande envoyée">
-          La demande est partie vers {target}. Elle arrive en quelques secondes si la personne est en ligne, sinon à sa prochaine ouverture (le relais ne garde les messages que quelques heures).
+          La demande est partie vers {target}. Elle arrive en quelques secondes si la personne est en ligne, sinon dès qu’elle ouvre Coup de Pouce en ligne (le relais ne garde les messages que quelques heures).
           Une pop-up verte vous prévient dès qu’elle répond.
         </Alert>
       ) : (
-        <>
-          <p>Aucun profil {target} sur cet appareil. Envoyer une demande d’ajout en ligne à ce numéro ? Vous ne pouvez pas savoir à l’avance si ce numéro existe.</p>
-          {err && <Alert kind="error">{err}</Alert>}
-          <div className="row">
-            <button type="button" className="btn btn-primary" disabled={state === 'sending'} onClick={() => void send()}>
-              <Icon name="plus" size={18} /> {state === 'sending' ? 'Envoi…' : `Envoyer la demande à ${target}`}
-            </button>
-          </div>
-        </>
+        <p>Aucun profil {target} sur cet appareil. Pour ajouter quelqu’un qui utilise Coup de Pouce sur un autre appareil, envoyez-lui une demande d’ajout en ligne.</p>
       )}
-      {dialog}
+      <div className="row">
+        <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>
+          <Icon name={sent || pending ? 'refresh' : 'plus'} size={18} /> {sent || pending ? `Renvoyer la demande à ${target}` : `Envoyer la demande à ${target}`}
+        </button>
+      </div>
+      {open && <RequestDialog target={target} onClose={() => setOpen(false)} onSent={() => setSent(true)} />}
     </section>
   )
 }
@@ -133,8 +116,8 @@ export default function SearchPage() {
 
       {LOCAL && (
         <p className="hint">
-          Quelqu’un utilise Coup de Pouce sur un autre appareil ? <strong>En ligne</strong>, tapez simplement son identifiant (par exemple User#4827) pour lui envoyer une demande.
-          Hors ligne, on ne le voit pas : <Link to="/echanger">ajoutez-le avec son code de partage</Link> (vous pouvez aussi coller ce code ici).
+          Quelqu’un utilise Coup de Pouce sur un autre appareil ? Tapez simplement <strong>son code court</strong> (son User#, par exemple User#4827) : une pop-up vous propose de lui envoyer la demande. Le nom seul ne suffit que pour les profils déjà connus de cet appareil.
+          Sans internet : <Link to="/echanger">code long et fichiers</Link> (vous pouvez coller ce code ici).
         </p>
       )}
       <div aria-live="polite" className="results">

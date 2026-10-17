@@ -4,7 +4,7 @@ import { useNotify } from '../context/NotifyContext'
 import { EITT_URL } from '../lib/config'
 import { LOCAL } from '../lib/mode'
 import { ContactPopups } from '../local/Contacts'
-import { OnlineBar } from '../local/OnlineBar'
+import { OnlineBar, OnlinePrompt } from '../local/OnlineBar'
 import { RedAlertBanner } from '../local/RedAlerts'
 import { Link, NavLink, useNavigate } from '../lib/router'
 import { isConfigured } from '../lib/supabase'
@@ -96,6 +96,7 @@ export function Layout({ children }: { children: ReactNode }) {
       </header>
 
       {LOCAL && authed && <OnlineBar />}
+      {LOCAL && authed && <OnlinePrompt />}
       {LOCAL && !authed && (
         <div className="local-banner" role="note">
           <Icon name="info" size={16} />

@@ -26,6 +26,8 @@ interface Person {
   remote?: boolean
   /** Mode en ligne activé pour ce profil (profils de CET appareil seulement). */
   online?: boolean
+  /** La question « activer le mode en ligne ? » a déjà été posée à ce profil (on ne la repose pas). */
+  oq?: boolean
   /** Clés ECDH du profil (créées à la première activation du mode en ligne). */
   keys?: KeyPair
   /** Personne qui m'a écrit en ligne et que je n'ai pas encore acceptée : invisible dans la recherche et les contacts. */
@@ -36,7 +38,7 @@ interface Person {
 interface Conv { id: string; a: string; b: string; created_at: string; archived: Record<string, boolean>; read_at: Record<string, string>; ch?: Channel }
 interface ContactReq { id: string; from: string; to: string; status: 'pending' | 'accepted' | 'refused'; created_at: string; responded_at: string | null; seen_by_from?: boolean; net?: { mid: string; pk: JsonWebKey } }
 /** Demande d'ajout que J'AI envoyée en ligne à un numéro (on ne connaît pas encore la personne). */
-interface NetReq { id: string; local: string; to_public_id: string; created_at: string; status: 'pending' | 'accepted' | 'refused'; responded_at: string | null; seen_by_from?: boolean; person?: string }
+interface NetReq { id: string; local: string; to_public_id: string; created_at: string; status: 'pending' | 'accepted' | 'refused'; responded_at: string | null; seen_by_from?: boolean; person?: string; label?: string }
 /** Envois en attente de connexion : un message ou une réponse n'est jamais perdu en silence. */
 interface Outbox { id: string; profile: string; topic: string; body: string; msg?: string }
 interface BlockRow { blocker_id: string; blocked_id: string; created_at: string }
@@ -285,7 +287,7 @@ export function pickRandomNumber(): number {
 }
 
 /** Crée un profil local avec un identifiant tiré au hasard (User#4827…), l'enregistre et l'active. Un numéro supprimé n'est jamais réutilisé. */
-export function createLocalProfile(p: { displayName: string; acceptRules: boolean; number?: number }): Profile {
+export function createLocalProfile(p: { displayName: string; acceptRules: boolean; number?: number; online?: boolean }): Profile {
   const name = p.displayName.trim().slice(0, 40)
   const n = p.number && Number.isInteger(p.number) && p.number > 0 && !takenNumbers().has(p.number) ? p.number : pickRandomNumber()
   const id = newId()
@@ -295,13 +297,39 @@ export function createLocalProfile(p: { displayName: string; acceptRules: boolea
     settings.rules_version = RULES_VERSION
     settings.rules_accepted_at = nowIso()
   }
-  db.people[id] = { n, profile, settings }
+  db.people[id] = { n, profile, settings, oq: true }
+  if (p.online && p.acceptRules) {
+    // Mode en ligne choisi à la création : le profil « écoute » sa boîte de demandes. Rien n'est publié tant qu'on n'agit pas.
+    db.people[id].online = true
+    void genKeyPair().then((k) => {
+      const me2 = db.people[id]
+      if (me2 && !me2.keys) {
+        me2.keys = k
+        save()
+      }
+    })
+  }
   db.seq = Math.max(db.seq, n + 1)
   db.last = id
   save()
   setActive(id)
   emitAuth()
   return profile
+}
+
+/** Vrai tant qu'on n'a pas encore demandé à ce profil s'il veut passer en ligne (profils créés avant ce mode). */
+export function onlinePromptDue(): boolean {
+  const p = activeId ? db.people[activeId] : undefined
+  return Boolean(p && !p.remote && !p.online && !p.oq && rulesOk(p))
+}
+
+/** Réponse à la question : activer maintenant, ou plus tard (posée une seule fois ; l'interrupteur reste dans la barre). */
+export async function answerOnlinePrompt(enable: boolean): Promise<void> {
+  const p = activeId ? db.people[activeId] : undefined
+  if (!p) return
+  p.oq = true
+  save()
+  if (enable) await setOnline(true)
 }
 
 export function useLocalProfile(id: string): void {
@@ -1084,7 +1112,7 @@ export function contactNotices(): ContactNotices {
   if (!my || !db.people[my]) return { incoming: [], answers: [], outgoing: [] }
   const prof = (id: string) => db.people[id]?.profile
   const incoming = db.requests.filter((r) => r.to === my && r.status === 'pending' && prof(r.from)).sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => ({ id: r.id, from: prof(r.from) as Profile, created_at: r.created_at }))
-  const netOf = (x: NetReq): Profile => (x.person && prof(x.person)) || { id: `net-${x.id}`, public_id: x.to_public_id, display_name: null, avatar_path: null, bio: null, created_at: x.created_at }
+  const netOf = (x: NetReq): Profile => (x.person && prof(x.person)) || { id: `net-${x.id}`, public_id: x.to_public_id, display_name: x.label ?? null, avatar_path: null, bio: null, created_at: x.created_at }
   const mine = db.netreq.filter((x) => x.local === my)
   const answers = [
     ...db.requests.filter((r) => r.from === my && r.status !== 'pending' && !r.seen_by_from && prof(r.to)).map((r) => ({ id: r.id, other: prof(r.to) as Profile, accepted: r.status === 'accepted' })),
@@ -1326,7 +1354,7 @@ export function onlineTarget(query: string): string | null {
 }
 
 /** Envoie une demande d'ajout EN LIGNE à un numéro. Échoue clairement si le relais est injoignable (pas de demande « fantôme »). */
-export async function sendOnlineRequest(query: string): Promise<void> {
+export async function sendOnlineRequest(query: string, label = ''): Promise<void> {
   const my = me()
   const pid = onlineTarget(query) ?? fail('bad_target')
   if (!rulesOk(my)) fail('rules_required')
@@ -1345,7 +1373,9 @@ export async function sendOnlineRequest(query: string): Promise<void> {
   const p = db.people[id] ?? fail('not_authenticated')
   if (!p.keys) p.keys = keys
   // Demande déjà en attente : on la RENVOIE telle quelle (même identifiant, donc sans doublon chez l'autre) au cas où le relais l'aurait perdue.
-  const nr: NetReq = waiting ?? { id: newId(), local: id, to_public_id: pid, created_at: nowIso(), status: 'pending', responded_at: null }
+  const nick = stripCtl(label).slice(0, 40)
+  const nr: NetReq = waiting ?? { id: newId(), local: id, to_public_id: pid, created_at: nowIso(), status: 'pending', responded_at: null, ...(nick ? { label: nick } : {}) }
+  if (waiting && nick && !waiting.label) waiting.label = nick
   const body = JSON.stringify({ cdp: 1, t: 'req', mid: nr.id, to: pid, from: { id, public_id: p.profile.public_id, display_name: p.profile.display_name }, pk: p.keys?.pub, ts: nr.created_at })
   await publish(getRelay(), await mailboxTopic(pid), body)
   if (!waiting) {

@@ -3,7 +3,7 @@ import { ConfirmDialog } from '../components/Dialogs'
 import { Alert, Icon } from '../components/ui'
 import { friendlyError } from '../lib/errors'
 import { Link } from '../lib/router'
-import { conversationLink, conversationVerification, getOnline, messageNet, onlineRequestState, sendOnlineRequest, setOnline, setRelay, subscribeOnlineStatus, type OnlineInfo } from './localApi'
+import { answerOnlinePrompt, onlinePromptDue, conversationLink, conversationVerification, getOnline, messageNet, onlineRequestState, sendOnlineRequest, setOnline, setRelay, subscribeOnlineStatus, type OnlineInfo } from './localApi'
 
 /** État du mode en ligne du profil actif ; se met à jour quand la connexion change et toutes les 2 s (file d'attente). */
 export function useOnline(): OnlineInfo {
@@ -267,5 +267,39 @@ export function CrossDeviceGuide() {
       {!info.enabled && <div className="row"><button type="button" className="btn btn-primary btn-sm" onClick={ask}><Icon name="globe" size={16} /> Passer en ligne</button></div>}
       {dialog}
     </section>
+  )
+}
+
+/** Une seule fois par profil créé avant le mode en ligne : propose de l'activer (pas d'activation en silence). */
+export function OnlinePrompt() {
+  const info = useOnline()
+  const [closed, setClosed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (closed || info.enabled || !onlinePromptDue()) return null
+  async function answer(enable: boolean) {
+    setBusy(true)
+    setError(null)
+    try {
+      await answerOnlinePrompt(enable)
+      setClosed(true)
+    } catch (e) {
+      setError(friendlyError(e))
+      setBusy(false)
+    }
+  }
+  return (
+    <ConfirmDialog title="Recevoir les demandes des autres appareils ?" confirmLabel="Passer en ligne" busy={busy} error={error} onConfirm={() => void answer(true)} onCancel={() => void answer(false)}>
+      <div className="stack">
+        <p>
+          Pour que quelqu’un puisse vous ajouter avec votre identifiant (<strong>et que vous receviez la pop-up verte « Accepter / Refuser »</strong>), ce profil doit être <strong>en ligne</strong> : il écoute sa boîte de demandes sur un relais public ({relayHost(info.relay)}).
+        </p>
+        <ul>
+          <li>Rien n’est publié tant que vous n’envoyez pas vous-même une demande ou un message.</li>
+          <li>Le relais voit votre adresse internet ; les messages texte sont chiffrés de bout en bout.</li>
+          <li>« Annuler » = rester hors ligne (vous pourrez passer en ligne depuis la barre en haut, à tout moment).</li>
+        </ul>
+      </div>
+    </ConfirmDialog>
   )
 }

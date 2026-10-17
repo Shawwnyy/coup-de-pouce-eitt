@@ -47,27 +47,36 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Bloc « Mon code de partage » (page Échanger et page Profil). Le code ne contient ni mot de passe ni message. */
+/** Bloc « Mon code » : le code COURT (User#…) d'abord ; l'ancien code long (CDP1…) reste, replié, pour l'échange sans internet. */
 export function ShareCodeCard({ onProfile = false }: { onProfile?: boolean }) {
   const { profile } = useAuth()
   const [copyNote, setCopyNote] = useState<string | null>(null)
   if (!profile) return null
   const myCode = makeShareCode()
+  const copy = async (text: string, ok: string) => setCopyNote((await copyText(text)) ? ok : 'Copie impossible : sélectionnez le texte et copiez-le.')
   return (
     <section className={onProfile ? 'share-card stack' : 'card stack'} aria-labelledby={onProfile ? 'pf-code' : 'ex-1'}>
-      <h2 id={onProfile ? 'pf-code' : 'ex-1'}>{onProfile ? 'Mon code de partage' : '1. Mon code de partage'}</h2>
+      <h2 id={onProfile ? 'pf-code' : 'ex-1'}>{onProfile ? 'Mon code' : '1. Mon code'}</h2>
+      <p className="short-code mono" aria-label="Mon code court">{profile.public_id}</p>
       <p>
-        Pour les échanges hors ligne : donnez ce code à une personne qui utilise Coup de Pouce sur un autre appareil, elle pourra vous retrouver par votre nom ou votre numéro {profile.public_id}.
-        Il ne contient pas de mot de passe ni de message. <strong>En ligne</strong>, ce code est inutile : votre identifiant {profile.public_id} suffit pour qu’on vous ajoute.
+        <strong>Voilà votre code court.</strong> Donnez-le à la personne : elle le tape dans « Recherche », une pop-up lui propose de vous envoyer la demande, et vous recevez une pop-up verte « Accepter / Refuser ».
+        Vous devez tous les deux être <strong>en ligne</strong> (bouton en haut).
       </p>
-      <textarea className="input mono" readOnly rows={3} value={myCode} aria-label="Mon code de partage" onFocus={(e) => e.currentTarget.select()} />
       <div className="row">
-        <button type="button" className="btn btn-primary" onClick={async () => setCopyNote((await copyText(myCode)) ? 'Code copié.' : 'Copie impossible : sélectionnez le code et copiez-le.')}>
+        <button type="button" className="btn btn-primary" onClick={() => void copy(profile.public_id, 'Code copié.')}>
           <Icon name="copy" size={18} /> Copier mon code
         </button>
         {onProfile && <Link to="/echanger" className="btn">Ajouter quelqu’un / échanger des messages</Link>}
         {copyNote && <span className="hint" role="status">{copyNote}</span>}
       </div>
+      <details>
+        <summary>Code long (pour échanger sans internet)</summary>
+        <div className="stack">
+          <p className="hint">À donner seulement si vous n’êtes pas en ligne : l’autre personne le colle dans « Ajouter quelqu’un avec son code ». Il ne contient ni mot de passe ni message.</p>
+          <textarea className="input mono" readOnly rows={3} value={myCode} aria-label="Mon code de partage" onFocus={(e) => e.currentTarget.select()} />
+          <div className="row"><button type="button" className="btn btn-sm" onClick={() => void copy(myCode, 'Code long copié.')}><Icon name="copy" size={16} /> Copier le code long</button></div>
+        </div>
+      </details>
     </section>
   )
 }

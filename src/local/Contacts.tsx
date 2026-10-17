@@ -81,6 +81,11 @@ const readLater = (): string[] => {
   }
 }
 
+/** Affiche une pop-up verte de confirmation (utilisable depuis n'importe quel écran). */
+export function notifyFlash(text: string): void {
+  window.dispatchEvent(new CustomEvent('cdp:flash', { detail: text }))
+}
+
 /** Pop-ups VERTES : demande d'ajout reçue (Accepter / Refuser) et réponse à ma propre demande. Aucune permission du navigateur n'est demandée. */
 export function ContactPopups() {
   const { userId } = useAuth()
@@ -93,8 +98,13 @@ export function ContactPopups() {
 
   useEffect(() => setN(contactNotices()), [userId, tick])
   useEffect(() => {
+    const on = (e: Event) => setFlash(String((e as CustomEvent).detail ?? ''))
+    window.addEventListener('cdp:flash', on)
+    return () => window.removeEventListener('cdp:flash', on)
+  }, [])
+  useEffect(() => {
     if (!flash) return
-    const t = window.setTimeout(() => setFlash(null), 5000)
+    const t = window.setTimeout(() => setFlash(null), 9000)
     return () => window.clearTimeout(t)
   }, [flash])
 
